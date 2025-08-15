@@ -7,7 +7,7 @@ import os
 # ===================================================================
 # --- File Paths ---
 DOE_FILE_PATH = 'Experiment/doe_test_plan_01.csv'
-RAW_DATA_DIR = 'Experiment/raw_data'
+RAW_DATA_DIR = 'Experiment/raw_data_PLA'
 OUTPUT_FILE_PATH = 'Experiment/master_dataset.parquet'
 
 # --- Physical Constants ---
@@ -143,21 +143,31 @@ print(f"  - Removed {initial_rows - len(master_df)} rows with calculated efficie
 
 # ... rest of the script (outlier removal, etc.) continues here ...
 
+# In process_data.py
+
 # ===================================================================
 # --- 4. Remove Statistical Outliers ---
 # ===================================================================
 print(f"Removing statistical outliers with a Z-score threshold of {Z_THRESHOLD}...")
+
 # Calculate Z-scores for each key efficiency within each propeller group
 master_df['z_score_prop'] = master_df.groupby('filename')['prop_efficiency'].transform(lambda x: np.abs((x - x.mean()) / x.std()))
 master_df['z_score_motor'] = master_df.groupby('filename')['motor_efficiency'].transform(lambda x: np.abs((x - x.mean()) / x.std()))
 master_df['z_score_sys'] = master_df.groupby('filename')['system_efficiency'].transform(lambda x: np.abs((x - x.mean()) / x.std()))
 
+# --- ADD THIS LINE ---
+# Add a Z-score calculation for vibration to detect desync spikes
+master_df['z_score_vib'] = master_df.groupby('filename')['Vibration (g)'].transform(lambda x: np.abs((x - x.mean()) / x.std()))
+
+
+# --- UPDATE THIS FILTER ---
 # Filter out rows where any of the Z-scores are too high
 initial_rows = len(master_df)
 df_cleaned = master_df[
     (master_df['z_score_prop'] < Z_THRESHOLD) &
     (master_df['z_score_motor'] < Z_THRESHOLD) &
-    (master_df['z_score_sys'] < Z_THRESHOLD)
+    (master_df['z_score_sys'] < Z_THRESHOLD) &
+    (master_df['z_score_vib'] < Z_THRESHOLD)  # Add the vibration check here
 ].copy()
 print(f"Removed {initial_rows - len(df_cleaned)} statistical outlier data points.")
 

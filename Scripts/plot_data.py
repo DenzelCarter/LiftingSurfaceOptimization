@@ -8,130 +8,112 @@ import seaborn as sns
 # --- 1. SETUP: Define Constants and Parameters ---
 # ===================================================================
 # --- File Paths ---
-DOE_FILE_PATH = 'Experiment/doe_test_plan_01.csv'
-RAW_DATA_DIR = 'Experiment/raw_data'
+MASTER_DATASET_PATH = 'Experiment/master_dataset.parquet'
 PLOTS_FOLDER = 'Plots'
-
-# --- Physical Constants ---
-R_HUB = 0.040
-RHO = 1.225
 
 # --- Processing Parameters ---
 NUM_BINS = 20      # Number of RPM bins to average data into
-Z_THRESHOLD = 3.0  # Z-score for outlier removal (3 is standard)
 
 # --- Column Names ---
-RPM_COL = 'Motor Electrical Speed (RPM)'
-THRUST_COL = 'Thrust (N)'
-ELEC_POWER_COL = 'Electrical Power (W)'
+RPM_COL = 'Motor Electrical Speed (RPM)' # Using optical for best accuracy
 
 # ===================================================================
-# --- 2. Load and Combine All Available Data ---
+# --- 2. Load the Pre-Processed Master Dataset ---
 # ===================================================================
-print(f"Loading DOE plan from '{DOE_FILE_PATH}'...")
-try:
-    doe_df = pd.read_csv(DOE_FILE_PATH)
-except FileNotFoundError:
-    print(f"Error: DOE file not found at '{DOE_FILE_PATH}'")
+print(f"Loading master dataset from '{MASTER_DATASET_PATH}'...")
+if not os.path.exists(MASTER_DATASET_PATH):
+    print(f"Error: Master dataset not found at '{MASTER_DATASET_PATH}'")
+    print("Please run the 'process_data.py' script first.")
     exit()
 
-all_data_list = []
-print("Processing each propeller defined in the plan...")
-for index, prop_row in doe_df.iterrows():
-    prop_filename = prop_row['filename']
-    raw_file_path = os.path.join(RAW_DATA_DIR, prop_filename)
-
-    if not os.path.exists(raw_file_path):
-        print(f"  - Skipping '{prop_filename}': Raw data file not found.")
-        continue
-
-    try:
-        df_single = pd.read_csv(raw_file_path)
-        for col_name in doe_df.columns:
-            df_single[col_name] = prop_row[col_name]
-        all_data_list.append(df_single)
-        print(f"  + Loaded '{prop_filename}'")
-    except Exception as e:
-        print(f"  - Skipping '{prop_filename}': Could not read file. Error: {e}")
-
-if not all_data_list:
-    print("No data files were loaded. Exiting.")
-    exit()
-
-master_df = pd.concat(all_data_list, ignore_index=True)
+df_cleaned = pd.read_parquet(MASTER_DATASET_PATH)
+print(f"Successfully loaded {len(df_cleaned)} cleaned data points.")
 
 # ===================================================================
-# --- 3. Clean Data and Calculate System Efficiency ---
+# --- 3. Bin Data to Reduce Noise for Plotting ---
 # ===================================================================
-print("\nCleaning data and calculating system efficiency...")
-# Convert key columns to numeric
-for col in [THRUST_COL, ELEC_POWER_COL, RPM_COL]:
-    master_df[col] = pd.to_numeric(master_df[col], errors='coerce')
-master_df.replace(0, np.nan, inplace=True)
-master_df.dropna(subset=[THRUST_COL, ELEC_POWER_COL, RPM_COL], inplace=True)
+print(f"Binning data into {NUM_BINS} RPM buckets for plotting...")
 
-# --- Calculate Ideal Power and System Efficiency ---
-master_df['D'] = 2 * (R_HUB + master_df['span (m)'])
-master_df['A'] = np.pi * (master_df['D'] / 2)**2
-master_df['ideal_power'] = np.sqrt(master_df[THRUST_COL]**3 / (2 * RHO * master_df['A']))
-master_df['system_efficiency'] = master_df['ideal_power'] / master_df[ELEC_POWER_COL]
+# Define all columns that need to be averaged in the bins
+value_cols = [
+    RPM_COL,
+    'system_efficiency',
+    'prop_efficiency',
+    'motor_efficiency'
+]
 
-master_df.replace([np.inf, -np.inf], np.nan, inplace=True)
-master_df.dropna(subset=['system_efficiency'], inplace=True)
+# Use a more explicit loop for binning to ensure stability and silence warnings
+binned_data_list = []
+for name, group in df_cleaned.groupby('filename'):
+    if len(group) > NUM_BINS:
+        # Create bins based on the RPM range for this specific prop
+        group['rpm_bin'] = pd.cut(group[RPM_COL], bins=NUM_BINS, labels=False, duplicates='drop')
+        
+        # Group by the new bins and calculate the mean of all our value columns
+        binned_group = group.groupby('rpm_bin')[value_cols].mean()
+        
+        # Add the filename back in as a column
+        binned_group['filename'] = name
+        binned_data_list.append(binned_group)
 
-# ===================================================================
-# --- 4. Remove Outliers ---
-# ===================================================================
-print(f"Removing outliers with a Z-score threshold of {Z_THRESHOLD}...")
-# Calculate Z-scores for system efficiency within each propeller group
-master_df['z_score_sys_eff'] = master_df.groupby('filename')['system_efficiency'].transform(lambda x: np.abs((x - x.mean()) / x.std()))
-
-# Filter out the outliers
-df_cleaned = master_df[master_df['z_score_sys_eff'] < Z_THRESHOLD].copy()
-print(f"Removed {len(master_df) - len(df_cleaned)} outlier data points.")
-
-# ===================================================================
-# --- 5. Bin Data to Reduce Noise ---
-# ===================================================================
-print(f"Binning data into {NUM_BINS} RPM buckets...")
-value_cols = [RPM_COL, 'system_efficiency'] # Only need to bin these two columns now
-
-def bin_group(group):
-    if len(group) > 1:
-        group['rpm_bin'] = pd.cut(group[RPM_COL], bins=NUM_BINS, labels=False)
-        return group.groupby('rpm_bin')[value_cols].mean()
-    return None
-
-df_binned = df_cleaned.groupby('filename').apply(bin_group).reset_index()
+# Concatenate all the binned dataframes back into one
+df_binned = pd.concat(binned_data_list).reset_index()
 
 # ===================================================================
-# --- 6. Generate and Save Plot ---
+# --- 4. Generate and Save Plots ---
 # ===================================================================
-# --- Initialize Plot ---
-fig, ax = plt.subplots(figsize=(14, 9))
+# --- Create a plotting function to avoid repeating code ---
+def create_and_save_plot(data, y_col, title, y_label, file_name):
+    """Generic function to create and save an efficiency plot."""
+    fig, ax = plt.subplots(figsize=(14, 9))
+    
+    # Get a unique color for each propeller
+    palette = sns.color_palette("husl", n_colors=data['filename'].nunique())
+    color_map = {prop: color for prop, color in zip(data['filename'].unique(), palette)}
+
+    # Loop through final data and plot
+    for prop_name, prop_data in data.groupby('filename'):
+        prop_label = prop_name.replace('.csv', '')
+        color = color_map[prop_name]
+        ax.plot(prop_data[RPM_COL], prop_data[y_col], marker='o', linestyle='-', markersize=4, label=prop_label, color=color)
+
+    # Finalize the Plot
+    ax.set_title(title, fontsize=16)
+    ax.set_xlabel('RPM', fontsize=12)
+    ax.set_ylabel(y_label, fontsize=12)
+    ax.grid(True, which='both', linestyle='--', linewidth=0.5)
+    ax.legend(bbox_to_anchor=(1.04, 1), loc="upper left", title="Propeller")
+    
+    # Save the figure
+    save_path = os.path.join(PLOTS_FOLDER, file_name)
+    fig.savefig(save_path, bbox_inches='tight')
+    print(f"  - Plot saved to '{save_path}'")
+    plt.close(fig) # Close the figure to free up memory
+
+# --- Generate all three plots ---
 os.makedirs(PLOTS_FOLDER, exist_ok=True)
-print(f"\nGenerating plot. File will be saved to '{PLOTS_FOLDER}/'")
+print(f"\nGenerating plots. Files will be saved to '{PLOTS_FOLDER}/'")
 
-# Get a unique color for each propeller
-palette = sns.color_palette("husl", n_colors=df_binned['filename'].nunique())
-color_map = {prop: color for prop, color in zip(df_binned['filename'].unique(), palette)}
+create_and_save_plot(
+    data=df_binned,
+    y_col='system_efficiency',
+    title='System Efficiency vs. RPM for All Propeller Designs',
+    y_label='System Efficiency (Ideal Power / Electrical Power)',
+    file_name='System_Efficiency_vs_RPM.pdf'
+)
 
-# --- Loop through final data and plot ---
-for prop_name, prop_data in df_binned.groupby('filename'):
-    prop_label = prop_name.replace('.csv', '')
-    color = color_map[prop_name]
-    ax.plot(prop_data[RPM_COL], prop_data['system_efficiency'], marker='o', linestyle='-', markersize=4, label=prop_label, color=color)
+create_and_save_plot(
+    data=df_binned,
+    y_col='prop_efficiency',
+    title='Propeller Efficiency vs. RPM for All Propeller Designs',
+    y_label='Propeller Efficiency (Ideal Power / Mechanical Power)',
+    file_name='Propeller_Efficiency_vs_RPM.pdf'
+)
 
-# --- Finalize the Plot ---
-ax.set_title('System Efficiency vs. RPM for All Propeller Designs', fontsize=16)
-ax.set_xlabel('RPM', fontsize=12)
-ax.set_ylabel('System Efficiency', fontsize=12)
-ax.grid(True, which='both', linestyle='--', linewidth=0.5)
-ax.legend(bbox_to_anchor=(1.04, 1), loc="upper left", title="Propeller")
-save_path = os.path.join(PLOTS_FOLDER, 'System_Efficiency_vs_RPM_All_Props.pdf')
-fig.savefig(save_path, bbox_inches='tight')
-print(f"  - System Efficiency plot saved to '{save_path}'")
-
-# --- Display Plot ---
-print("Displaying plot...")
-plt.show()
+create_and_save_plot(
+    data=df_binned,
+    y_col='motor_efficiency',
+    title='Motor Efficiency vs. RPM for All Propeller Designs',
+    y_label='Motor Efficiency (Mechanical Power / Electrical Power)',
+    file_name='Motor_Efficiency_vs_RPM.pdf'
+)
