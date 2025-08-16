@@ -6,13 +6,14 @@ import os
 # --- 1. SETUP: Define Constants and Parameters ---
 # ===================================================================
 # --- File Paths ---
-DOE_FILE_PATH = 'Experiment/doe_test_plan_01.csv'
+DOE_FILE_PATH = 'Experiment/doe_test_plan_02.csv'
 RAW_DATA_DIR = 'Experiment/raw_data'
 TARE_LOOKUP_FILE = 'Experiment/tare_lookup.csv'
 OUTPUT_FILE_PATH = 'Experiment/master_dataset.parquet'
 
 # --- Physical Constants ---
-R_HUB = 0.040
+SPAN = 0.19 # (m) span of one wing
+R_HUB = 0.040 # (m) radius of wing hub
 RHO = 1.225
 
 # --- Data Cleaning Parameters ---
@@ -108,7 +109,7 @@ print(f"  - Removed {initial_rows - len(master_df)} rows due to threshold filter
 # ===================================================================
 print("Calculating efficiencies...")
 # --- Calculate Ideal Power and Core Efficiencies ---
-master_df['D'] = 2 * (R_HUB + master_df['span (m)'])
+master_df['D'] = 2 * (R_HUB + SPAN)
 master_df['A'] = np.pi * (master_df['D'] / 2)**2
 master_df['ideal_power'] = np.sqrt(master_df[THRUST_COL]**3 / (2 * RHO * master_df['A']))
 

@@ -64,7 +64,7 @@ print(f"Data split into {len(X_train)} training samples and {len(X_test)} testin
 print("Training the Random Forest model...")
 # Using the parameters found from tuning
 model = RandomForestRegressor(
-    n_estimators=100,
+    n_estimators=500,
     max_features='sqrt',
     max_depth=None,
     oob_score=True,

@@ -18,7 +18,7 @@ PLOTS_FOLDER = 'Plots'
 
 # --- Column Names ---
 # Define the features the model will be trained on
-SPAN_COL = 'span (m)'
+# SPAN_COL = 'span (m)'
 AR_COL = 'AR'
 LAMBDA_COL = 'lambda'
 AOAROOT_COL = 'aoaRoot (deg)'
@@ -39,7 +39,7 @@ df = pd.read_parquet(MASTER_DATASET_PATH)
 print("Dataset loaded successfully.")
 
 # --- Define the list of columns we need for this model ---
-features = [SPAN_COL, AR_COL, LAMBDA_COL, AOAROOT_COL, AOATIP_COL, RPM_COL]
+features = [AR_COL, LAMBDA_COL, AOAROOT_COL, AOATIP_COL, RPM_COL]
 features_and_target = features + [TARGET_COL]
 
 # --- Final cleaning step: drop any rows with missing values in our selected columns ---
@@ -68,7 +68,7 @@ print(f"Data split into {len(X_train)} training samples and {len(X_test)} testin
 print("Training the Random Forest model...")
 # Using the parameters found from tuning
 model = RandomForestRegressor(
-    n_estimators=100,
+    n_estimators=500,
     max_features='sqrt',
     max_depth=None,
     oob_score=True,
