@@ -15,7 +15,7 @@ PLOTS_FOLDER = 'Plots'
 NUM_BINS = 20      # Number of RPM bins to average data into
 
 # --- Column Names ---
-RPM_COL = 'Motor Electrical Speed (RPM)' # Using optical for best accuracy
+RPM_COL = 'Motor Electrical Speed (RPM)'
 
 # ===================================================================
 # --- 2. Load the Pre-Processed Master Dataset ---
