@@ -7,7 +7,7 @@ import os
 DOE_FILE_PATH = 'Experiment/doe_test_plan_02.csv'
 
 # --- Fixed Geometric Parameters ---
-SPAN_M = 0.19  # The fixed span of a single blade in meters
+SPAN_M = 0.184  # The fixed span of a single blade in meters
 
 # ===================================================================
 # --- 2. Load the DOE Plan ---
