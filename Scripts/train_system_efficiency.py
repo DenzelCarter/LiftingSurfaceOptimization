@@ -24,6 +24,11 @@ LAMBDA_COL = 'lambda'
 AOAROOT_COL = 'aoaRoot (deg)'
 AOATIP_COL = 'aoaTip (deg)'
 RPM_COL = 'Motor Electrical Speed (RPM)'
+MOD_COL = 'flexMod (GPA)'
+THICK_COL = 'avg_thickness_m'
+REYN_COL = 'reynolds_number'
+CT_COL = 'CT'
+ELEC_COL = 'Electrical Power (W)'
 
 # Define the target variable the model will predict
 TARGET_COL = 'system_efficiency' # <-- UPDATED to our new target
@@ -39,7 +44,7 @@ df = pd.read_parquet(MASTER_DATASET_PATH)
 print("Dataset loaded successfully.")
 
 # --- Define the list of columns we need for this model ---
-features = [AR_COL, LAMBDA_COL, AOAROOT_COL, AOATIP_COL, RPM_COL]
+features = [AR_COL, LAMBDA_COL, AOAROOT_COL, AOATIP_COL, RPM_COL, MOD_COL, THICK_COL, REYN_COL, CT_COL, ELEC_COL]
 features_and_target = features + [TARGET_COL]
 
 # --- Final cleaning step: drop any rows with missing values in our selected columns ---

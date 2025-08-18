@@ -19,6 +19,7 @@ PLOTS_FOLDER = 'Plots'
 # --- Column Names ---
 # Define the features the model will be trained on
 MECH_COL = 'Mechanical Power (W)'
+ELEC_COL = 'Electrical Power (W)'
 RPM_COL = 'Motor Electrical Speed (RPM)'
 
 # Define the target variable the model will predict
@@ -35,7 +36,7 @@ df = pd.read_parquet(MASTER_DATASET_PATH)
 print("Dataset loaded successfully.")
 
 # --- Define the list of columns we need for this model ---
-features = [MECH_COL, RPM_COL]
+features = [MECH_COL, ELEC_COL, RPM_COL]
 features_and_target = features + [TARGET_COL]
 
 # --- Final cleaning step: drop any rows with missing values in our selected columns ---

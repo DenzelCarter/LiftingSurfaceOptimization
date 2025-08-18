@@ -12,9 +12,10 @@ TARE_LOOKUP_FILE = 'Experiment/tare_lookup.csv'
 OUTPUT_FILE_PATH = 'Experiment/master_dataset.parquet'
 
 # --- Physical Constants ---
-SPAN = 0.19 # (m) span of one wing
-R_HUB = 0.040 # (m) radius of wing hub
-RHO = 1.225
+SPAN = 0.184 # (m) span of one wing
+R_HUB = 0.046 # (m) radius of wing hub + mount  thickness
+RHO_AIR = 1.225 # Density of air
+MU_AIR = 1.81e-5 # Dynamic viscosity of air in Pa*s
 
 # --- Data Cleaning Parameters ---
 MIN_THRUST_THRESHOLD = 0.1      # N
@@ -111,7 +112,7 @@ print("Calculating efficiencies...")
 # --- Calculate Ideal Power and Core Efficiencies ---
 master_df['D'] = 2 * (R_HUB + SPAN)
 master_df['A'] = np.pi * (master_df['D'] / 2)**2
-master_df['ideal_power'] = np.sqrt(master_df[THRUST_COL]**3 / (2 * RHO * master_df['A']))
+master_df['ideal_power'] = np.sqrt(master_df[THRUST_COL]**3 / (2 * RHO_AIR * master_df['A']))
 
 master_df['prop_efficiency'] = master_df['ideal_power'] / master_df[MECH_POWER_COL]
 master_df['motor_efficiency'] = master_df[MECH_POWER_COL] / master_df[ELEC_POWER_COL]
@@ -127,6 +128,52 @@ master_df.replace([np.inf, -np.inf], np.nan, inplace=True)
 master_df.dropna(subset=['prop_efficiency', 'motor_efficiency', 'system_efficiency'], inplace=True)
 print(f"  - Removed {initial_rows - len(master_df)} rows with invalid or impossible efficiencies.")
 
+# Reynolds Block
+print("Calculating Reynolds Number...")
+
+# Calculate geometric properties needed for Re
+root_chord = (2 * SPAN) / (master_df['AR'] * (1 + master_df['lambda']))
+tip_chord = master_df['lambda'] * root_chord
+
+# Characteristic Length: Chord at 75% of the blade span
+chord_at_75 = root_chord - 0.75 * (root_chord - tip_chord)
+
+# Characteristic Velocity: Rotational speed at 75% of the blade span
+radius_at_75 = R_HUB + (0.75 * SPAN)
+velocity_at_75 = (master_df[RPM_COL] * (2 * np.pi / 60)) * radius_at_75
+
+# Calculate Reynolds Number for each row
+master_df['reynolds_number'] = (RHO_AIR * velocity_at_75 * chord_at_75) / MU_AIR
+
+# --- END OF NEW BLOCK ---
+
+# --- ADD THIS NEW AVERAGE  MAX THICKNESS BLOCK ---
+print("Calculating average blade thickness for NACA 0012 airfoil...")
+
+# For a NACA 0012 airfoil, max thickness is 12% of the chord
+THICKNESS_CHORD_RATIO = 0.12
+
+# The average chord for a linearly tapered blade
+average_chord = (root_chord + tip_chord) / 2
+
+# The average max thickness is 12% of the average chord
+master_df['avg_thickness_m'] = THICKNESS_CHORD_RATIO * average_chord
+
+# --- END OF NEW BLOCK ---
+
+# --- ADD THIS NEW THRUST COEFFICIENT (CT) BLOCK ---
+print("Calculating Thrust Coefficient (CT)...")
+
+# Revolutions per second (n)
+n = master_df[RPM_COL] / 60
+
+# Propeller Diameter (D), which was already calculated
+D = master_df['D']
+
+# Thrust Coefficient (CT)
+master_df['CT'] = master_df[THRUST_COL] / (RHO_AIR * n**2 * D**4)
+
+# --- END OF NEW BLOCK ---
 
 # ===================================================================
 # --- 5. Remove Statistical Outliers ---
