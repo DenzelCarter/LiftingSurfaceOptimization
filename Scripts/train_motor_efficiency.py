@@ -4,26 +4,30 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import joblib
 import os
-from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_absolute_error, r2_score
 
 # ===================================================================
-# --- 1. SETUP: Define File Paths and Column Names ---
+# --- 1. SETUP: Define Paths, Features, and Holdout Set ---
 # ===================================================================
 # --- File Paths ---
-MASTER_DATASET_PATH = 'Experiment/master_dataset.parquet'
+MASTER_DATASET_PATH = 'Experiment/tools/master_dataset.parquet'
 MODEL_SAVE_PATH = 'Trained_Models/motor_efficiency_model.joblib'
 PLOTS_FOLDER = 'Plots'
 
-# --- Column Names ---
+# --- Feature and Target Definitions ---
 # Define the features the model will be trained on
-MECH_COL = 'Mechanical Power (W)'
-ELEC_COL = 'Electrical Power (W)'
-RPM_COL = 'Motor Electrical Speed (RPM)'
-
+X_FEATURES = [
+    'Voltage (V)',
+    'Motor Electrical Speed (RPM)'
+]
 # Define the target variable the model will predict
-TARGET_COL = 'motor_efficiency' # <-- UPDATED to our new target
+Y_TARGET = 'motor_efficiency'
+
+# --- Holdout Test Set Definition ---
+# *** IMPORTANT: Choose one or more props you have tested to hold out for the final test ***
+# Holding out data from an entire test run is a more robust validation method.
+TEST_PROP_FILENAMES = ['Prop_14_T2K_01.csv'] # Example: using prop 14 data as the test set
 
 # ===================================================================
 # --- 2. Load and Prepare Data ---
@@ -32,53 +36,52 @@ print(f"Loading master dataset from '{MASTER_DATASET_PATH}'...")
 if not os.path.exists(MASTER_DATASET_PATH):
     print(f"Error: Master dataset not found. Please run process_data.py first.")
     exit()
-df = pd.read_parquet(MASTER_DATASET_PATH)
-print("Dataset loaded successfully.")
 
-# --- Define the list of columns we need for this model ---
-features = [MECH_COL, ELEC_COL, RPM_COL]
-features_and_target = features + [TARGET_COL]
+master_df = pd.read_parquet(MASTER_DATASET_PATH)
 
-# --- Final cleaning step: drop any rows with missing values in our selected columns ---
-df.dropna(subset=features_and_target, inplace=True)
+# Drop any rows with missing values in the columns we need
+master_df.dropna(subset=X_FEATURES + [Y_TARGET], inplace=True)
+print(f"Loaded {len(master_df)} clean data points.")
 
-print(f"Data prepared. Using {len(df)} clean data points for training.")
-if df.empty:
-    print(f"Error: No data remains after cleaning. Cannot train model.")
+# ===================================================================
+# --- 3. Split Data into Training and Test Sets ---
+# ===================================================================
+print(f"Holding out data from the following props for the test set: {TEST_PROP_FILENAMES}")
+train_df = master_df[~master_df['filename'].isin(TEST_PROP_FILENAMES)]
+test_df = master_df[master_df['filename'].isin(TEST_PROP_FILENAMES)]
+
+if train_df.empty or test_df.empty:
+    print("Error: Could not create both a training and a test set.")
+    print("Please check your TEST_PROP_FILENAMES list and ensure you have tested multiple props.")
     exit()
 
-# ===================================================================
-# --- 3. Define Features (X) and Target (y) ---
-# ===================================================================
-X = df[features]
-y = df[TARGET_COL]
+print(f"Training set size: {len(train_df)} data points")
+print(f"Test set size: {len(test_df)} data points")
+
+# Define features (X) and target (y) for both sets
+X_train = train_df[X_FEATURES]
+y_train = train_df[Y_TARGET]
+X_test = test_df[X_FEATURES]
+y_test = test_df[Y_TARGET]
 
 # ===================================================================
-# --- 4. Split Data for Training and Testing ---
+# --- 4. Train the Random Forest Model ---
 # ===================================================================
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-print(f"Data split into {len(X_train)} training samples and {len(X_test)} testing samples.")
-
-# ===================================================================
-# --- 5. Train the Random Forest Model ---
-# ===================================================================
-print("Training the Random Forest model...")
-# Using the parameters found from tuning
+print("\nTraining the Random Forest model...")
 model = RandomForestRegressor(
     n_estimators=500,
     max_features='sqrt',
-    max_depth=None,
-    oob_score=True,
+    oob_score=True,  # Use Out-of-Bag score for a cross-validation estimate
     random_state=42,
-    n_jobs=-1
+    n_jobs=-1        # Use all available CPU cores
 )
 model.fit(X_train, y_train)
 print("Model training complete.")
 
 # ===================================================================
-# --- 6. Evaluate Model Performance ---
+# --- 5. Evaluate Model Performance ---
 # ===================================================================
-print("Evaluating model performance...")
+print("\nEvaluating model performance...")
 y_pred = model.predict(X_test)
 r2 = r2_score(y_test, y_pred)
 mae = mean_absolute_error(y_test, y_pred)
@@ -89,45 +92,41 @@ print(f"  Out-of-Bag (OOB) Score: {model.oob_score_:.4f}")
 print(f"  Mean Absolute Error (MAE): {mae:.4f}")
 
 # --- Predicted vs. Actual Plot ---
+os.makedirs(PLOTS_FOLDER, exist_ok=True)
 plt.figure(figsize=(8, 8))
-plt.scatter(y_test, y_pred, alpha=0.5, label='Model Predictions')
+sns.scatterplot(x=y_test, y=y_pred, alpha=0.6, label='Model Predictions')
 
+# Set plot limits to be equal and add a perfect prediction line
 min_val = min(y_test.min(), y_pred.min())
 max_val = max(y_test.max(), y_pred.max())
-padding = (max_val - min_val) * 0.1
-plot_lim_min = min_val - padding
-plot_lim_max = max_val + padding
+plt.plot([min_val, max_val], [min_val, max_val], '--r', lw=2, label="Perfect Prediction")
+plt.xlim(min_val * 0.95, max_val * 1.05)
+plt.ylim(min_val * 0.95, max_val * 1.05)
 
-plt.xlim(plot_lim_min, plot_lim_max)
-plt.ylim(plot_lim_min, plot_lim_max)
-plt.plot([plot_lim_min, plot_lim_max], [plot_lim_min, plot_lim_max], '--r', lw=2, label="Perfect Prediction")
-
-# These three lines have been corrected
 plt.xlabel("Actual Motor Efficiency")
 plt.ylabel("Predicted Motor Efficiency")
-plt.title(f"Predicted vs. Actual Motor Efficiency (R² = {r2:.3f})")
-
+plt.title(f"Predicted vs. Actual Performance (R² = {r2:.3f})")
 plt.legend()
 plt.grid(True)
 plt.tight_layout()
 
-# Save the figure
 perf_save_path = os.path.join(PLOTS_FOLDER, 'motor_model_performance_predicted_vs_actual.pdf')
 plt.savefig(perf_save_path, bbox_inches='tight')
 print(f"Saved performance plot to '{perf_save_path}'")
+plt.close()
 
 # ===================================================================
-# --- 7. Analyze Feature Importance ---
+# --- 6. Analyze Feature Importance ---
 # ===================================================================
-importances = model.feature_importances_
 feature_importance_df = pd.DataFrame({
-    'feature': features,
-    'importance': importances
+    'feature': X_FEATURES,
+    'importance': model.feature_importances_
 }).sort_values('importance', ascending=False)
 
 plt.figure(figsize=(10, 6))
-sns.barplot(x='importance', y='feature', data=feature_importance_df, palette='viridis')
-plt.title("Feature Importance")
+# Corrected barplot call to handle future Seaborn versions
+sns.barplot(x='importance', y='feature', data=feature_importance_df, palette='viridis', hue='feature', legend=False)
+plt.title("Feature Importance for Motor Efficiency Model")
 plt.xlabel("Importance Score")
 plt.ylabel("Feature")
 plt.tight_layout()
@@ -135,12 +134,10 @@ plt.tight_layout()
 imp_save_path = os.path.join(PLOTS_FOLDER, 'motor_model_feature_importance.pdf')
 plt.savefig(imp_save_path, bbox_inches='tight')
 print(f"Saved importance plot to '{imp_save_path}'")
+plt.close()
 
 # ===================================================================
-# --- 8. Save the Trained Model & Show Plots ---
+# --- 7. Save the Trained Model ---
 # ===================================================================
-joblib.dump(model, MODEL_SAVE_PATH,compress=3)
+joblib.dump(model, MODEL_SAVE_PATH, compress=3)
 print(f"\nTrained model saved to '{MODEL_SAVE_PATH}'")
-
-# print("Displaying plots...")
-# plt.show()

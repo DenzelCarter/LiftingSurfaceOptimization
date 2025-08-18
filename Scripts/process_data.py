@@ -6,10 +6,10 @@ import os
 # --- 1. SETUP: Define Constants and Parameters ---
 # ===================================================================
 # --- File Paths ---
-DOE_FILE_PATH = 'Experiment/doe_test_plan_02.csv'
-RAW_DATA_DIR = 'Experiment/raw_data'
-TARE_LOOKUP_FILE = 'Experiment/tare_lookup.csv'
-OUTPUT_FILE_PATH = 'Experiment/master_dataset.parquet'
+DOE_FILE_PATH = 'Experiment/tools/doe_test_plan_01.csv'
+RAW_DATA_DIR = 'Experiment/data'
+TARE_LOOKUP_FILE = 'Experiment/tools/tare_lookup_01.csv'
+OUTPUT_FILE_PATH = 'Experiment/tools/master_dataset.parquet'
 
 # --- Physical Constants ---
 SPAN = 0.184 # (m) span of one wing
@@ -158,20 +158,6 @@ average_chord = (root_chord + tip_chord) / 2
 
 # The average max thickness is 12% of the average chord
 master_df['avg_thickness_m'] = THICKNESS_CHORD_RATIO * average_chord
-
-# --- END OF NEW BLOCK ---
-
-# --- ADD THIS NEW THRUST COEFFICIENT (CT) BLOCK ---
-print("Calculating Thrust Coefficient (CT)...")
-
-# Revolutions per second (n)
-n = master_df[RPM_COL] / 60
-
-# Propeller Diameter (D), which was already calculated
-D = master_df['D']
-
-# Thrust Coefficient (CT)
-master_df['CT'] = master_df[THRUST_COL] / (RHO_AIR * n**2 * D**4)
 
 # --- END OF NEW BLOCK ---
 
