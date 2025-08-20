@@ -1,1 +1,12 @@
-filename,rpm_bin,bemt_min_rpm,bemt_max_rpm,reason
+filename,rpm_bin,min,max,reason
+Prop_014_PLA_01.csv,450,,,no_match
+Prop_014_PLA_01.csv,600,,,no_match
+Prop_014_PLA_01.csv,750,,,no_match
+Prop_014_PLA_01.csv,900,,,no_match
+Prop_014_PLA_01.csv,1050,,,no_match
+Prop_014_PLA_01.csv,1200,,,no_match
+Prop_014_PLA_01.csv,1350,,,no_match
+Prop_014_PLA_01.csv,1500,,,no_match
+Prop_014_PLA_01.csv,1650,,,no_match
+Prop_014_PLA_01.csv,1800,,,no_match
+Prop_014_PLA_01.csv,1950,,,no_match

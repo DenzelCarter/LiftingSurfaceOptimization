@@ -1,12 +1,9 @@
 # process_data.py
-# Clean → bin (150 rpm, robust nearest) → merge with BEMT → save master_dataset.parquet
-# Also logs any BEMT gaps to bemt_missing_bins.csv.
-# Fixes:
-#   - no walrus operator in DOE_02 check
-#   - avoids double-inserting rpm_bin during aggregation
-#   - clamps merged prop_eff_bemt to [0,1] defensively
+# Clean → bin (150 rpm) → add effective stiffness features (xy/z/isotropic) →
+# merge with BEMT → save master_dataset.parquet and report any BEMT gaps.
 
 import os
+import re
 import numpy as np
 import pandas as pd
 
@@ -56,24 +53,59 @@ def robust_numeric(df, cols):
         df[c] = pd.to_numeric(df[c], errors='coerce')
     return df
 
+def _coalesce_cols(df, new_col, candidates, default=np.nan):
+    """Create new_col from the first existing candidate, else default."""
+    for c in candidates:
+        if c in df.columns:
+            df[new_col] = df[c]
+            return df
+    df[new_col] = default
+    return df
+
 def main():
     # ---- load DOE ----
     frames = []
     if os.path.exists(DOE_01): frames.append(pd.read_csv(DOE_01))
-    if os.path.exists(DOE_02): frames.append(pd.read_csv(DOE_02))  # <= fixed (no walrus)
+    if os.path.exists(DOE_02): frames.append(pd.read_csv(DOE_02))
     if not frames:
         raise SystemExit("DOE files not found.")
     doe = pd.concat(frames, ignore_index=True)
+
+    # Back-compat: ensure stiffness metadata columns exist
+    # Expected (if provided): 'flexMod_xy (GPA)', 'flexMod_z (GPA)', optional 'flexMod_iso (GPA)'
+    # If only 'flexMod (GPA)' exists, use it as xy and iso fallback
+    if 'flexMod_xy (GPA)' not in doe.columns:
+        doe = _coalesce_cols(doe, 'flexMod_xy (GPA)', ['flexMod (GPA)'], default=np.nan)
+    if 'flexMod_z (GPA)' not in doe.columns:
+        # if z not given, assume 0.5× xy as a mild anisotropy fallback
+        doe['flexMod_z (GPA)'] = np.where(np.isfinite(doe['flexMod_xy (GPA)']), 0.5*doe['flexMod_xy (GPA)'], np.nan)
+    if 'flexMod_iso (GPA)' not in doe.columns:
+        doe = _coalesce_cols(doe, 'flexMod_iso (GPA)', ['flexMod (GPA)', 'flexMod_xy (GPA)'], default=np.nan)
+
+    # Standardize metadata naming (optional but nice to have)
+    # Expected: 'process' in {'FDM','SLA','Resin',...}, 'orientation' in {'span_strong','span_weak','isotropic'}, 'material' string
+    if 'process' not in doe.columns:  doe['process'] = 'FDM'
+    if 'orientation' not in doe.columns: doe['orientation'] = np.where(doe['process'].isin(['SLA','Resin']), 'isotropic', 'span_strong')
+    if 'material' not in doe.columns:
+        # try to infer from filename like 'Prop_013_PLA_01.csv' → 'PLA'
+        def infer_mat(fn):
+            m = re.search(r'Prop_\d+_([A-Za-z0-9\-]+)_\d+', str(fn))
+            return m.group(1) if m else 'UNKNOWN'
+        doe['material'] = doe.get('filename', pd.Series(dtype=str)).apply(infer_mat)
+
+    # Force isotropic orientation for SLA/Resin even if CSV says otherwise
+    doe.loc[doe['process'].isin(['SLA','Resin']), 'orientation'] = 'isotropic'
 
     # ---- load raw data per prop ----
     all_list = []
     for _, prow in doe.iterrows():
         fname = prow['filename']
         p = os.path.join(DATA_DIR, fname)
-        if not os.path.exists(p): 
+        if not os.path.exists(p):
             continue
         try:
             df = pd.read_csv(p)
+            # attach DOE metadata columns to every row
             for c in doe.columns:
                 df[c] = prow[c]
             all_list.append(df)
@@ -113,12 +145,12 @@ def main():
                     (master[RPM_COL]    > MIN_RPM) &
                     (master[VIB_COL]    < MAX_VIB)].copy()
 
-    # ---- features & efficiencies ----
+    # ---- aerodynamic features & efficiencies ----
     master['A'] = A
-    master['ideal_power'] = np.sqrt(np.clip(master[THRUST_COL], 0, None)**3 / (2 * RHO_AIR * A))
-    master['prop_efficiency'] = master['ideal_power'] / master[MPOW_COL]
-    master['motor_efficiency'] = master[MPOW_COL] / master[EPOW_COL]
-    master['system_efficiency'] = master['ideal_power'] / master[EPOW_COL]
+    master['ideal_power']    = np.sqrt(np.clip(master[THRUST_COL], 0, None)**3 / (2 * RHO_AIR * A))
+    master['prop_efficiency']= master['ideal_power'] / master[MPOW_COL]
+    master['motor_efficiency']= master[MPOW_COL] / master[EPOW_COL]
+    master['system_efficiency']= master['ideal_power'] / master[EPOW_COL]
 
     master = master[(master['prop_efficiency']  > 0) & (master['prop_efficiency'] <= 1.0) &
                     (master['motor_efficiency'] > 0) & (master['motor_efficiency'] <= 1.0)].copy()
@@ -134,6 +166,30 @@ def main():
     avg_chord  = 0.5*(root_chord + tip_chord)
     master['avg_thickness_m'] = 0.12 * avg_chord
 
+    # ---- effective flexural modulus based on orientation/process ----
+    # If isotropic (resin/SLA or orientation=='isotropic'): use ISO if present, else xy
+    # For FDM with explicit orientation:
+    #   - 'span_strong' → use xy
+    #   - 'span_weak'   → use z
+    def compute_E_eff(row):
+        orient = str(row.get('orientation', 'span_strong')).lower()
+        proc   = str(row.get('process', 'FDM'))
+        Exy = row.get('flexMod_xy (GPA)', np.nan)
+        Ez  = row.get('flexMod_z (GPA)',  np.nan)
+        Eiso= row.get('flexMod_iso (GPA)', np.nan)
+        if proc in ['SLA','Resin'] or orient == 'isotropic':
+            return Eiso if np.isfinite(Eiso) else (Exy if np.isfinite(Exy) else np.nan)
+        if orient == 'span_weak':
+            return Ez if np.isfinite(Ez) else (0.5*Exy if np.isfinite(Exy) else np.nan)
+        # default span_strong
+        return Exy if np.isfinite(Exy) else (Eiso if np.isfinite(Eiso) else np.nan)
+
+    master['E_eff_GPa'] = master.apply(compute_E_eff, axis=1)
+    master['logE_eff']  = np.log(np.clip(master['E_eff_GPa']*1e9, 2e8, 5e10))  # stabilize extremes
+    # simple deflection proxy (per-row), later averaged per (prop, rpm_bin)
+    omega_row = omega
+    master['C_deflect'] = (omega_row**2) * (master['avg_thickness_m']**3) * (SPAN**4) / np.clip(master['E_eff_GPa']*1e9, 1e6, None)
+
     # ---- averaging in 150-rpm bins ----
     master['rpm_bin'] = bin_nearest(master[RPM_COL].to_numpy(), BIN_RPM)
 
@@ -147,11 +203,18 @@ def main():
         if drop_key in numeric_cols:
             numeric_cols.remove(drop_key)
 
-    id_cols = ['filename','AR','lambda','aoaRoot (deg)','aoaTip (deg)','flexMod (GPA)']
-    agg = master.groupby(['filename','rpm_bin'])[numeric_cols].mean().reset_index()
-    agg = agg.merge(master[id_cols].drop_duplicates('filename'), on='filename', how='left', suffixes=('','_y'))
+    # carry id/metadata (include new stiffness + process/material/orientation)
+    id_cols = ['filename','AR','lambda','aoaRoot (deg)','aoaTip (deg)',
+               'flexMod_xy (GPA)','flexMod_z (GPA)','flexMod_iso (GPA)',
+               'E_eff_GPa','logE_eff','process','orientation','material']
+
+    agg = (master
+           .groupby(['filename','rpm_bin'])[numeric_cols].mean().reset_index()
+           .merge(master[id_cols].drop_duplicates('filename'),
+                  on='filename', how='left', suffixes=('','_y')))
     agg.drop(columns=[c for c in agg.columns if c.endswith('_y')], inplace=True)
 
+    # rename a few means for clarity
     if 'prop_efficiency' in agg.columns:
         agg.rename(columns={'prop_efficiency':'prop_efficiency_mean'}, inplace=True)
     if 'reynolds_number' in agg.columns:
@@ -175,7 +238,7 @@ def main():
     if 'prop_eff_bemt' in df.columns:
         df['prop_eff_bemt'] = df['prop_eff_bemt'].clip(lower=0.0, upper=1.0)
 
-    # ---- report any missing BEMT rows (should be none) ----
+    # ---- report any missing BEMT rows ----
     miss = df['prop_eff_bemt'].isna()
     if miss.any():
         r_by_prop = bemt.groupby('filename')['rpm_bemt'].agg(['min','max']).reset_index()

@@ -1,0 +1,9 @@
+group,group_L2_importance
+geometry,0.0646258464486844
+orientation,0.003983758796976618
+interaction:logE×orientation,0.003983758796976609
+stiffness,0.002468983267056371
+material,0.00232727224855664
+process,0.00232727224855664
+interaction:logE×material,0.0023100987110643866
+interaction:logE×process,0.0023100987110643767
