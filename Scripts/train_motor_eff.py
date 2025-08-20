@@ -11,7 +11,7 @@ from sklearn.model_selection import LeaveOneGroupOut, cross_val_score
 # --- 1. SETUP: Define Paths and Features ---
 # ===================================================================
 MASTER_DATASET_PATH = 'Experiment/tools/master_dataset.parquet'
-MODEL_SAVE_PATH = 'Trained_Models/motor_efficiency_model.joblib'
+MODEL_SAVE_PATH = 'Trained_Models/rfr_motor_eff_model.joblib'
 PLOTS_FOLDER = 'Plots'
 
 X_FEATURES = ['Voltage (V)', 'Motor Electrical Speed (RPM)']

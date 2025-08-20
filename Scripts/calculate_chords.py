@@ -4,7 +4,7 @@ import os
 # ===================================================================
 # --- 1. SETUP: Define Constants and File Path ---
 # ===================================================================
-DOE_FILE_PATH = 'Experiment/doe_test_plan_02.csv'
+DOE_FILE_PATH = 'Experiment/tools/doe_test_plan_01.csv'
 
 # --- Fixed Geometric Parameters ---
 SPAN_M = 0.184  # The fixed span of a single blade in meters
@@ -25,11 +25,9 @@ except FileNotFoundError:
 print("Calculating root and tip chords...")
 
 # Use the provided formulas to calculate chord lengths
-# Note: We use the blade span (span - r_hub) for the calculation
-blade_span = SPAN_M
 
 # Calculate root chord
-doe_df['root_chord_mm'] = (2 * blade_span) / (doe_df['AR'] * (1 + doe_df['lambda'])) * 1000
+doe_df['root_chord_mm'] = (2 * SPAN_M) / (doe_df['AR'] * (1 + doe_df['lambda'])) * 1000
 
 # Calculate tip chord
 doe_df['tip_chord_mm'] = doe_df['lambda'] * doe_df['root_chord_mm']

@@ -1,39 +1,38 @@
 import pandas as pd
 from scipy.stats import qmc
+import os
 
 # ===================================================================
 # --- 1. DEFINE YOUR DESIGN SPACE ---
 # ===================================================================
 
-# Define the number of unique propellers you want to test
+# --- File and Sample Settings ---
 NUM_SAMPLES = 25
-# Define the number of geometric parameters
-NUM_DIMENSIONS = 4
+OUTPUT_FILENAME = 'Experiment/tools/doe_test_plan_02.csv'
 
-# Define the lower and upper bounds for each parameter IN ORDER
-# [AR, lambda, span, aoaRoot, aoaTip]
-lower_bounds = [4.0, 0.4, 8.0, 2.0]
-upper_bounds = [12.0, 1.0, 20.0, 8.0]
+# --- Fixed Parameters (Constants for all designs in this plan) ---
+DEFAULT_FLEX_MOD_GPA = 2.75 # Default to PLA Basic, can be changed in the CSV
 
-# Define the column names for the output file
-column_names = ['AR', 'lambda', 'aoaRoot (deg)', 'aoaTip (deg)']
-
-# Define the output filename
-output_filename = 'Experiment/doe_test_plan.csv'
+# --- Variable Parameters (for Latin Hypercube Sampling) ---
+# Define the lower and upper bounds for each variable parameter
+# The order is: [AR, lambda, aoaRoot, aoaTip]
+LOWER_BOUNDS = [6.0, 0.5, 10.0, 3.0]
+UPPER_BOUNDS = [10.0, 1.0, 20.0, 8.0]
+COLUMN_NAMES = ['AR', 'lambda', 'aoaRoot (deg)', 'aoaTip (deg)']
 
 # ===================================================================
 # --- 2. GENERATE THE LATIN HYPERCUBE SAMPLE ---
 # ===================================================================
 
 print("Generating Latin Hypercube Sample...")
-# Create the sampler object
-sampler = qmc.LatinHypercube(d=NUM_DIMENSIONS)
+# Create the sampler object for our 4 variable dimensions
+sampler = qmc.LatinHypercube(d=len(LOWER_BOUNDS))
 
 # Get a sample in the unit hypercube [0, 1]
 sample = sampler.random(n=NUM_SAMPLES)
 
 # Scale the sample from the unit hypercube to your real engineering units
-scaled_sample = qmc.scale(sample, lower_bounds, upper_bounds)
+scaled_sample = qmc.scale(sample, LOWER_BOUNDS, UPPER_BOUNDS)
 print("Sample generation complete.")
 
 # ===================================================================
@@ -41,15 +40,32 @@ print("Sample generation complete.")
 # ===================================================================
 
 # Create a pandas DataFrame from the scaled sample
-doe_df = pd.DataFrame(scaled_sample, columns=column_names)
+doe_df = pd.DataFrame(scaled_sample, columns=COLUMN_NAMES)
 
-# Optional: Add a column for a unique test ID
-doe_df.insert(0, 'Test_ID', [f'Prop_{i+1:02d}' for i in range(NUM_SAMPLES)])
+# --- Add the fixed and placeholder columns ---
+# Insert the filename column at the beginning
+doe_df.insert(0, 'filename', [f'Prop_{i+26:03d}_MAT_01.csv' for i in range(NUM_SAMPLES)])
 
-# Save the test plan to a CSV file
-doe_df.to_csv(output_filename, index=False)
+# Add the other fixed parameters
+doe_df['flexMod (GPA)'] = DEFAULT_FLEX_MOD_GPA
 
-print(f"\nSuccessfully created DOE test plan with {NUM_SAMPLES} designs.")
-print(f"Test plan saved to '{output_filename}'")
-print("\nFirst 5 designs to test:")
+# Reorder columns for clarity
+final_columns_order = [
+    'filename',
+    'AR',
+    'lambda',
+    'aoaRoot (deg)',
+    'aoaTip (deg)',
+    'flexMod (GPA)'
+]
+doe_df = doe_df[final_columns_order]
+
+# --- Save the final test plan to a CSV file ---
+# Ensure the output directory exists
+os.makedirs(os.path.dirname(OUTPUT_FILENAME), exist_ok=True)
+doe_df.to_csv(OUTPUT_FILENAME, index=False)
+
+print(f"\nSuccessfully created DOE test plan with {NUM_SAMPLES} new designs.")
+print(f"Test plan saved to '{OUTPUT_FILENAME}'")
+print("\nFirst 5 designs of the new plan:")
 print(doe_df.head())
