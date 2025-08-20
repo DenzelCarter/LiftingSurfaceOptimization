@@ -16,13 +16,20 @@ from sklearn.pipeline import Pipeline
 # =========================
 K_RECOMMEND = 6
 
-# Selection blend: composite = w_exploit * score_pred + w_explore * score_dist
-W_EXPLOIT = 0.6
-W_EXPLORE = 0.4
+# Compute these upstream:
+R2 = 0.818
+N  = 15
 
-# Use BEMT prior (averaged across rpm bins) and calibrate it on tested props?
+# Exploit weight grows with R², saturates around 0.75
+W_EXPLOIT = float(np.clip(0.50 + 0.25*R2, 0.55, 0.75))
+W_EXPLORE = 1.0 - W_EXPLOIT
+
+# Trust BEMT less as model improves; also taper with data count
 USE_BEMT_PRIOR = True
-BEMT_WEIGHT    = 0.5   # how much BEMT contributes inside the exploit score (0..1)
+BEMT_WEIGHT = float(np.clip(0.30*(1.0 - R2) * (20.0 / max(N, 1)), 0.05, 0.30))
+
+# Diversity among top-K (std-space)
+MIN_DIST_BETWEEN_RECS = 0.30
 
 # Which DOE rows to allow (geometry box still applies below)
 PREFER_PLAN_02 = True
@@ -51,9 +58,6 @@ FEATURE_WEIGHTS = {
     'logE_eff': 1.0,
     # 'twist_slope': 1.0,  # enable if INCLUDE_TWIST_SLOPE=True
 }
-
-# Diversity constraint among the K picks
-MIN_DIST_BETWEEN_RECS = 0.0
 
 # =========================
 # Paths (relative to this file)
