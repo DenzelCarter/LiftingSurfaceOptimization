@@ -41,7 +41,7 @@ CAT_COLS   = ['process', 'material', 'orientation']
 # -------- Feature toggles --------
 USE_CATS_DEFAULT                 = True
 USE_LOGE_X_CAT_INTERACT_DEFAULT  = True
-USE_CFD_SURR_FEATURE_DEFAULT     = True   # <- turn OFF if you want training 100% experimental
+USE_CFD_SURR_FEATURE_DEFAULT     = False   # <- turn OFF if you want training 100% experimental
 
 def _print(x): print(x, flush=True)
 

@@ -12,7 +12,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
 
 # ---------- Config ----------
-K_RECOMMEND = 6
+K_RECOMMEND = 10
 W_EXPLOIT = 0.70
 W_EXPLORE = 0.30
 

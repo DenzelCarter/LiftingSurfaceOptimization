@@ -242,4 +242,4 @@ if recs is not None and {'filename','rank','exploit_score','explore_score','comp
     ax.legend(frameon=True)
     ax.yaxis.set_major_locator(MaxNLocator(6))
     ax.grid(axis='y', alpha=0.2)
-    savefig(os.path.join(PLOTS_DIR, 'recommendations_scores.png'))
+    savefig(os.path.join(PLOTS_DIR, 'recommendations_scores.pdf'))
