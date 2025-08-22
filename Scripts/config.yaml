@@ -1,0 +1,37 @@
+# Scripts/config.yaml
+paths:
+  doe_csv: "../Experiment/doe/doe_test_plan_03.csv"
+  data_dir: "../Experiment/data"
+  airfoil_dir: "../Experiment/data/airfoils"
+  comsol_vtol_glob: "../Experiment/data/comsol/vtol/*.txt"
+  comsol_cruise_glob: "../Experiment/data/comsol/cruise/*.txt"
+  tools_dir: "../Experiment/outputs/tables"   # <-- all scripts read/write here
+  plots_dir: "../Experiment/outputs/plots"
+
+geometry_cols: ["AR", "lambda", "aoaRoot (deg)", "aoaTip (deg)"]
+
+bounds:
+  AR: [6.0, 10.0]
+  lambda: [0.5, 1.0]
+  "aoaRoot (deg)": [10.0, 20.0]
+  "aoaTip (deg)":  [3.0, 8.0]
+
+cruise_ll:
+  target_CL: 0.6
+  use_airfoil_polars: true      # use polars from airfoil_dir if present
+  airfoil_name: "NACA0012"      # for bookkeeping
+  # fallback quadratic if polars are missing for a CL/Re
+  CD0: 0.010
+  K2: 0.02
+  e_base: 0.95
+  e_taper_k: 0.10
+
+selection:
+  K: 8
+  w_hover: 0.5           # cruise weight = 1 - w_hover
+  w_exploit: 0.7         # explore weight = 1 - w_exploit
+  min_dist_std: 0.25
+  use_priors: true
+  priors_weights:
+    hover:   { bemt: 0.15, cfd: 0.25 }
+    cruise:  { ll:   0.70, cfd: 0.30 }
