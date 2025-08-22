@@ -21,7 +21,8 @@ TOOLS_DIR = os.path.join(PROJ_ROOT, 'Experiment', 'tools')
 INPUTS = [
     os.path.join(COMS_DIR, 'comsol_results_01.txt'),  # your pasted .txt
     os.path.join(COMS_DIR, 'comsol_results_02.txt'),
-    os.path.join(COMS_DIR, 'comsol_results_03.txt')# you can add CSVs or more TXTs here
+    os.path.join(COMS_DIR, 'comsol_results_03.txt'),
+    os.path.join(COMS_DIR, 'comsol_results_04.txt')# you can add CSVs or more TXTs here
 ]
 OUT = os.path.join(TOOLS_DIR, 'cfd_single_prior.csv')
 
