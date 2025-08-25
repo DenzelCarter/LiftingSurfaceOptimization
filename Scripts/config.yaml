@@ -1,37 +1,120 @@
-# Scripts/config.yaml
+# =========================
+# PATHS (no "tools" folder)
+# =========================
 paths:
-  doe_csv: "../Experiment/doe/doe_test_plan_03.csv"
-  data_dir: "../Experiment/data"
-  airfoil_dir: "../Experiment/data/airfoils"
-  comsol_vtol_glob: "../Experiment/data/comsol/vtol/*.txt"
-  comsol_cruise_glob: "../Experiment/data/comsol/cruise/*.txt"
-  tools_dir: "../Experiment/outputs/tables"   # <-- all scripts read/write here
-  plots_dir: "../Experiment/outputs/plots"
+  # Roots
+  exp_root:            "../Experiment"
 
+  # Data
+  data_dir:            "../Experiment/data"
+  data_bench_dir:      "../Experiment/data/bench"
+  data_tunnel_dir:     "../Experiment/data/tunnel"
+  data_processed_dir:  "../Experiment/data/processed"         # parquet, cleaned tables, etc.
+  master_parquet:      "../Experiment/data/processed/master_dataset.parquet"
+
+  # Airfoil polars (used by BEMT & LL-polar)
+  airfoil_csv:         "../Experiment/data/airfoils/naca0012_all_re.csv"
+
+  # COMSOL TXT (inputs)
+  comsol_vtol_glob:    "../Experiment/data/comsol/vtol/*.txt"
+  comsol_cruise_glob:  "../Experiment/data/comsol/cruise/*.txt"
+
+  # DOE
+  doe_dir:             "../Experiment/doe"
+  doe_csv:             "../Experiment/doe/doe_test_plan_01.csv"
+
+  # Outputs
+  outputs_dir:         "../Experiment/outputs"
+  outputs_tables_dir:  "../Experiment/outputs/tables"         # all CSVs written here
+  outputs_plots_dir:   "../Experiment/outputs/plots"          # all PDFs here
+
+# Processing of raw data
+  process:
+  rpm_window: [1000, 2000]   # set your band; or null to use all rows
+  rpm_n_bins: 1              # 1 = single average over window; >1 = split equally
+  use_tare: true             # subtract tare (if available)
+
+
+# =========================
+# FLUIDS
+# =========================
+fluids:
+  rho: 1.225     # kg/m^3
+  mu:  1.81e-5   # Pa·s
+
+# =========================
+# GEOMETRY (global constants)
+# =========================
+geometry:
+  r_hub_m:        0.046      # hub radius (m)
+  span_blade_m:   0.184      # blade span (m) -> r_tip = r_hub_m + span_blade_m
+  n_blades:       2
+  n_elems:        16         # BEMT radial elements
+
+# =========================
+# BEMT (hover)
+# =========================
+bemt:
+  rpm_min:          350
+  rpm_max:          4000
+  rpm_step:         50
+  bin_rpm:          150      # must match your processing binning
+  max_iters:        60
+  relax:            0.5
+  phi_fallback_deg: 2.5
+
+# =========================
+# LIFTING-LINE (cruise)
+# =========================
+cruise_ll:
+  use_polar:  true
+  target_CL:  0.50
+  CD0:        0.013          # only used if polar lookup fails
+  K2:         0.020
+  e_base:     0.86
+  e_taper_k:  0.06
+
+cruise_ll_polar:
+  V_cruise:   20.0           # m/s (set to your tunnel/cruise target)
+  span_ref_m: null           # if null, code uses 2 * span_blade_m
+
+# =========================
+# MODEL FEATURES & BOUNDS
+# =========================
 geometry_cols: ["AR", "lambda", "aoaRoot (deg)", "aoaTip (deg)"]
 
 bounds:
-  AR: [6.0, 10.0]
-  lambda: [0.5, 1.0]
-  "aoaRoot (deg)": [10.0, 20.0]
-  "aoaTip (deg)":  [3.0, 8.0]
+  AR:            [6.0, 10.0]
+  lambda:        [0.5, 1.0]
+  aoaRoot (deg): [10.0, 20.0]
+  aoaTip (deg):  [3.0, 8.0]
 
-cruise_ll:
-  target_CL: 0.6
-  use_airfoil_polars: true      # use polars from airfoil_dir if present
-  airfoil_name: "NACA0012"      # for bookkeeping
-  # fallback quadratic if polars are missing for a CL/Re
-  CD0: 0.010
-  K2: 0.02
-  e_base: 0.95
-  e_taper_k: 0.10
-
+# =========================
+# SELECTION / OPTIMIZATION
+# =========================
 selection:
-  K: 8
-  w_hover: 0.5           # cruise weight = 1 - w_hover
-  w_exploit: 0.7         # explore weight = 1 - w_exploit
-  min_dist_std: 0.25
+  w_hover: 0.5                 # weight for hover in Dual Mode Score
+  w_exploit: 0.6               # for select_dual (exploit vs explore)
   use_priors: true
   priors_weights:
-    hover:   { bemt: 0.15, cfd: 0.25 }
-    cruise:  { ll:   0.70, cfd: 0.30 }
+    hover:  { bemt: 0.6, cfd: 0.4 }
+    cruise: { ll: 0.7,  cfd: 0.3 }
+
+  # Independent modes (each channel):
+  #   auto | data_only | priors_only | hybrid
+  opt_mode_hover:  "auto"
+  opt_mode_cruise: "auto"
+
+  # Optimization sampling sizes
+  samples:
+    coarse: 5000
+    refine: 2000
+
+# =========================
+# PRIORS RUNTIME SWITCHES
+# =========================
+priors_runtime:
+  hover_bemt_mode: "surrogate"   # surrogate | direct
+  direct_bemt_max_samples: 800
+  use_cfd_vtol: true
+  use_cfd_cruise: true

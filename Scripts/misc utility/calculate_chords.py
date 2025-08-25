@@ -4,7 +4,7 @@ import os
 # ===================================================================
 # --- 1. SETUP: Define Constants and File Path ---
 # ===================================================================
-DOE_FILE_PATH = 'Experiment/tools/doe_test_plan_01.csv'
+DOE_FILE_PATH = 'Experiment/doe/doe_test_plan_03.csv'
 
 # --- Fixed Geometric Parameters ---
 SPAN_M = 0.184  # The fixed span of a single blade in meters
