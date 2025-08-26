@@ -96,9 +96,13 @@ selection:
   w_hover: 0.5                 # weight for hover in Dual Mode Score
   w_exploit: 0.6               # for select_dual (exploit vs explore)
   use_priors: true
+  use_priors_in_explot: true
+  w_data_vs_priors_hover: 0.85
+  w_data_vs_priors_cruise: 0.85
+
   priors_weights:
-    hover:  { bemt: 0.6, cfd: 0.4 }
-    cruise: { ll: 0.7,  cfd: 0.3 }
+    hover:  { bemt: 0.2, cfd: 0.8 }
+    cruise: { ll: 0.4,  cfd: 0.6 }
 
   # Independent modes (each channel):
   #   auto | data_only | priors_only | hybrid
@@ -118,3 +122,7 @@ priors_runtime:
   direct_bemt_max_samples: 800
   use_cfd_vtol: true
   use_cfd_cruise: true
+
+plots:
+  apply_prior_calibration: true     # apply y = a*x + b from prior_calibration.csv
+  show_raw_and_calibrated: true    # if true, plot both raw & calibrated priors
