@@ -106,8 +106,8 @@ selection:
 
   # Independent modes (each channel):
   #   auto | data_only | priors_only | hybrid
-  opt_mode_hover:  "auto"
-  opt_mode_cruise: "auto"
+  opt_mode_hover:  "priors_only"
+  opt_mode_cruise: "priors_only"
 
   # Optimization sampling sizes
   samples:

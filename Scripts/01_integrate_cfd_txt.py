@@ -123,14 +123,33 @@ def _eta_from_row(vals, cols, rho, disk_A):
 
 def _ld_from_row(vals, cols):
     """Cruise L/D from dedicated column (several aliases)."""
-    i = _find_col_tokens(cols, [["open","air","efficiency"],
-                                ["l","d"],
-                                ["lift","drag"],
-                                ["lifttodrag"]])
+    i = _find_col_tokens(cols, [["Lift over drag (1)"]])
     if i is not None and i < len(vals):
         v = float(vals[i])
         return v if np.isfinite(v) else np.nan
     return np.nan
+
+def _ucruise_from_row(vals, cols):
+    """
+    Find cruise freestream speed column (m/s) if present.
+    Flexible header matching for: 'U_cruise (m/s)', 'U cruise', 'V_inf', 'velocity', 'freestream'.
+    Returns float or np.nan.
+    """
+    # First try exact-ish names
+    i = _find_col_exact(cols, ["U_cruise (m/s)", "U_cruise", "U cruise (m/s)", "U cruise"])
+    if i is None:
+        # Then token-based aliases; prefer ones that suggest units
+        i = _find_col_tokens(cols, [
+            ["ucruise","ms"], ["u","cruise","ms"], ["u","cruise"],
+            ["vinf","ms"], ["v","inf","ms"], ["vinf"],
+            ["velocity","freestream","ms"], ["freestream","velocity","ms"],
+            ["velocity","ms"], ["u","ms"]
+        ])
+    if i is not None and i < len(vals):
+        v = float(vals[i])
+        return v if np.isfinite(v) else np.nan
+    return np.nan
+
 
 def _geom_from(cols, data):
     """Extract geometry columns with unit sniffing for AOA (rad→deg)."""
@@ -202,12 +221,15 @@ def main():
         # prop efficiency
         eta = np.array([_eta_from_row(row, cols, rho, disk_A) for row in data], float)
 
+        # --- in the VTOL block, add a placeholder column for schema consistency ---
         df = geom.copy()
-        df["rot (1/s)"] = rot_rps
-        df["rpm"]       = rpm
-        df["eta_cfd"]   = eta
-        df["mode"]      = "vtol"
+        df["rot (1/s)"]     = rot_rps
+        df["rpm"]           = rpm
+        df["eta_cfd"]       = eta
+        df["U_cruise (m/s)"]= np.nan   # <- VTOL has no cruise speed
+        df["mode"]          = "vtol"
         vt_frames.append(df)
+
 
     vt_all = pd.concat(vt_frames, ignore_index=True) if vt_frames else pd.DataFrame(
         columns=["AR","lambda","aoaRoot (deg)","aoaTip (deg)","rot (1/s)","rpm","eta_cfd","mode"]
@@ -225,13 +247,18 @@ def main():
             print(f"[CRUISE] Missing geometry cols in {os.path.basename(fp)}")
             continue
 
+        # --- in the CRUISE block, after LD extraction ---
         LD = np.array([_ld_from_row(row, cols) for row in data], float)
 
+        # NEW: U_cruise extraction
+        Uc = np.array([_ucruise_from_row(row, cols) for row in data], float)
+
         df = geom.copy()
-        df["rot (1/s)"] = np.nan
-        df["rpm"]       = np.nan
-        df["LD_cfd"]    = LD
-        df["mode"]      = "cruise"
+        df["rot (1/s)"]     = np.nan
+        df["rpm"]           = np.nan
+        df["LD_cfd"]        = LD
+        df["U_cruise (m/s)"]= Uc       # <- appended column
+        df["mode"]          = "cruise"
         cr_frames.append(df)
 
     cr_all = pd.concat(cr_frames, ignore_index=True) if cr_frames else pd.DataFrame(
