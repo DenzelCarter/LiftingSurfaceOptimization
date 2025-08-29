@@ -1,0 +1,4 @@
+material,predicted_efficiency,AR,lambda,aoaRoot (deg),aoaTip (deg),optim_rpm
+PLA,0.4791,6.1133,0.7726,19.4908,5.7004,1200.0000
+PLAP,0.4789,6.1133,0.7726,19.4908,5.7004,1200.0000
+PETGCF,0.4741,6.1635,0.5864,19.5965,5.9869,1200.0000

@@ -158,7 +158,7 @@ def main():
     df_processed = pd.DataFrame(processed_data)
     df_final = pd.merge(df_processed, doe_df, on="filename", how="inner")
     
-    final_cols = ["filename", *GEO_COLS, "rpm_bin_center", "prop_efficiency"]
+    final_cols = ["filename", *GEO_COLS, "material", "rpm_bin_center", "prop_efficiency"]
     df_final = df_final[[c for c in final_cols if c in df_final.columns]]
 
     df_final.to_parquet(P["master_parquet"], index=False)

@@ -2,16 +2,13 @@
 import os
 import pandas as pd
 import matplotlib.pyplot as plt
-from path_utils import load_cfg 
+from path_utils import load_cfg
 
 def pick_cols(df: pd.DataFrame):
-    """
-    Robustly finds the required column names for plotting from the dataframe.
-    """
-    # Define candidate names, with the most likely/recent names first.
-    rpm_candidates = ["rpm_bin_center", "rpm_superbin", "rpm_bin", "rpm"]
+    """Robustly finds the required column names for plotting."""
+    rpm_candidates = ["rpm_bin_center", "rpm"]
     eff_candidates = ["prop_efficiency", "prop_efficiency_mean"]
-    prop_candidates = ["filename", "prop_name", "prop"]
+    prop_candidates = ["filename", "prop_name"]
 
     def _find(candidates):
         for c in candidates:
@@ -25,12 +22,9 @@ def pick_cols(df: pd.DataFrame):
 
     if not all([rpm_col, eff_col, prop_col]):
         raise KeyError(f"Could not find all required columns. Found: RPM='{rpm_col}', Eff='{eff_col}', Prop='{prop_col}'")
-
-    print(f"Plotting with columns: RPM='{rpm_col}', Efficiency='{eff_col}', ID='{prop_col}'")
     return rpm_col, eff_col, prop_col
 
 def main():
-    # --- 1. Load Configuration and Data ---
     C = load_cfg()
     P = C["paths"]
     OUTDIR = P["outputs_plots_dir"]
@@ -42,30 +36,44 @@ def main():
     print(f"Reading data from: {input_path}")
     df = pd.read_parquet(input_path)
     
-    # --- 2. Prepare Data for Plotting ---
     rpm_col, eff_col, prop_col = pick_cols(df)
         
     df = df.sort_values([prop_col, rpm_col])
     os.makedirs(OUTDIR, exist_ok=True)
 
-    # --- 3. Generate Combined Plot ---
-    fig, ax = plt.subplots(figsize=(12, 8))
-    for name, group in df.groupby(prop_col):
-        if len(group) > 1:
-            ax.plot(group[rpm_col], group[eff_col], label=name, marker='o', markersize=4, alpha=0.8)
-        else:
-            ax.plot(group[rpm_col], group[eff_col], label=name, marker='o', markersize=6, linestyle='None', alpha=0.8)
+    # --- Define a set of unique visual identifiers ---
+    markers = ['o', 's', '^', 'D', 'v', 'p', '*', 'X']
+    linestyles = ['-', '--', ':', '-.']
+
+    # --- Generate Combined Plot ---
+    fig, ax = plt.subplots(figsize=(10, 7))
+    
+    # Use enumerate to get a unique index for each propeller
+    for i, (name, group) in enumerate(df.groupby(prop_col)):
+        # Cycle through markers and linestyles to create unique visuals
+        marker = markers[i % len(markers)]
+        linestyle = linestyles[(i // len(markers)) % len(linestyles)]
+        
+        ax.plot(
+            group[rpm_col], 
+            group[eff_col], 
+            label=name, 
+            marker=marker, 
+            linestyle=linestyle,
+            markersize=5, 
+            alpha=0.8
+        )
     
     ax.set_xlabel("RPM Bin Center")
-    ax.set_ylabel("Average Propeller Efficiency")
+    ax.set_ylabel("Propeller Efficiency")
     ax.set_title("Propeller Efficiency vs. RPM")
     ax.grid(True, which='both', linestyle='--', alpha=0.6)
     
-    if df[prop_col].nunique() <= 20:
-        ax.legend(title="Propeller", bbox_to_anchor=(1.04, 1), loc="upper left", fontsize='small')
+    ax.legend(title="Propeller", bbox_to_anchor=(1.04, 1), loc="upper left")
     
     out_all_path = os.path.join(OUTDIR, "rpm_vs_efficiency_all_props.pdf")
-    fig.tight_layout(rect=[0, 0, 0.85, 1])
+    # Adjust layout to make space for the legend
+    fig.tight_layout(rect=[0, 0, 0.85, 1]) 
     fig.savefig(out_all_path)
     plt.close(fig)
     print(f"Wrote combined plot to: {out_all_path}")

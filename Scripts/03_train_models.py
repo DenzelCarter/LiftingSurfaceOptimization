@@ -25,12 +25,17 @@ def main():
     print(f"Reading data from: {input_path}")
     df = pd.read_parquet(input_path)
     
-    features = ['AR', 'lambda', 'aoaRoot (deg)', 'aoaTip (deg)', 'rpm_bin_center']
+    features = ['AR', 'lambda', 'aoaRoot (deg)', 'aoaTip (deg)', 'rpm_bin_center','material']
     target = 'prop_efficiency'
     
-    X = df[features]
+    X_raw = df[features]
     y = df[target]
+
+    # --- NEW: Use one-hot encoding for the material feature ---
+    X = pd.get_dummies(X_raw, columns=['material'], drop_first=False)
+
     print(f"Training models on the full dataset of {len(X)} samples.")
+    print(f"Final features include: {list(X.columns)}")
 
     # --- 2. Train and Save XGBoost Model ---
     print("\n--- Training final XGBoost Model ---")
