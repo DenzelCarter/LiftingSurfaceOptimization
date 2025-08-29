@@ -32,6 +32,7 @@ paths:
 # Processing of raw data
 process:
   rpm_window: [800, 1600]   # set your band; or null to use all rows
+  rpm_bin_width: 150     # Desired RPM bin width
   rpm_n_bins: 5              # 1 = single average over window; >1 = split equally
   use_tare: true             # subtract tare (if available)
 

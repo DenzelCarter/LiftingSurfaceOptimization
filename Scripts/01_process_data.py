@@ -101,7 +101,17 @@ def main():
 
     # --- 1. Load Config and Create Tare Interpolator ---
     rpm_window = PROC_CFG.get("rpm_window")
-    n_bins = int(PROC_CFG.get("rpm_n_bins", 1))
+    
+    # --- NEW: Calculate n_bins from rpm_bin_width ---
+    rpm_bin_width = PROC_CFG.get("rpm_bin_width")
+    if rpm_window and rpm_bin_width:
+        window_range = rpm_window[1] - rpm_window[0]
+        n_bins = max(1, round(window_range / rpm_bin_width))
+        print(f"RPM bin width of {rpm_bin_width} in a {window_range} RPM window results in {n_bins} bins.")
+    else:
+        # Fallback to the old method if rpm_bin_width isn't defined
+        n_bins = int(PROC_CFG.get("rpm_n_bins", 1))
+
     tare_dir = P.get("data_tare_dir", os.path.join(P["data_bench_dir"], "tare"))
     
     tare_interpolator = _create_tare_interpolator_from_raw(tare_dir)
