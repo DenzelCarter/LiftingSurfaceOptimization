@@ -1,5 +1,5 @@
 # Scripts/04_evaluate_models.py
-# Adds a detailed performance summary to each parity plot.
+# Creates a clean, vertical, two-panel parity plot figure without a main title.
 
 import os
 import pandas as pd
@@ -37,14 +37,15 @@ def main():
 
     models = {"XGBoost": xgb_model, "GPR": gpr_model}
     
-    # --- 2. Create Figure for Plots ---
-    fig, axes = plt.subplots(1, 2, figsize=(13, 6))
-    fig.suptitle("Surrogate Model Performance Evaluation (Leave-One-Out CV)", fontsize=16)
+    # --- 2. Create Figure for Vertical Plots ---
+    fig, axes = plt.subplots(2, 1, figsize=(6, 10))
+    # --- REMOVED: fig.suptitle(...) ---
 
     # --- 3. Perform LOOCV and Plot ---
     loo = LeaveOneOut()
+    subplot_labels = ['(a)', '(b)']
 
-    for ax, (name, model) in zip(axes, models.items()):
+    for i, (ax, (name, model)) in enumerate(zip(axes, models.items())):
         predictions = cross_val_predict(model, X, y, cv=loo)
         
         r2 = r2_score(y, predictions)
@@ -53,15 +54,17 @@ def main():
         spearman_corr, _ = spearmanr(y, predictions)
 
         # --- Create Parity Plot ---
-        ax.scatter(y, predictions, edgecolors=(0, 0, 0, 0.6), alpha=0.8)
+        ax.scatter(y, predictions, edgecolors=(0, 0, 0, 0.6), alpha=0.8, s=30)
         lims = [np.min([y.min(), predictions.min()])*0.98, np.max([y.max(), predictions.max()])*1.02]
         ax.plot(lims, lims, 'k--', alpha=0.75, zorder=0)
         ax.set_aspect('equal'); ax.set_xlim(lims); ax.set_ylim(lims)
-        ax.set_title(f"{name} Model")
-        ax.set_xlabel("Measured Propeller Efficiency"); ax.set_ylabel("Predicted Propeller Efficiency")
+        
+        ax.set_title(f"{subplot_labels[i]} {name} Model")
+        ax.set_xlabel("Measured Propeller Efficiency")
+        ax.set_ylabel("Predicted Propeller Efficiency")
         ax.grid(True, linestyle='--', alpha=0.5)
 
-        # --- NEW: Add stats box to the plot ---
+        # --- Add stats box to the plot ---
         stats_text = (
             f"R² = {r2:.4f}\n"
             f"MAE = {mae:.4f}\n"
@@ -73,10 +76,13 @@ def main():
 
     # --- 4. Save the Combined Figure ---
     plot_path = os.path.join(plot_dir, "parity_plots_comparison.pdf")
-    fig.tight_layout(rect=[0, 0.03, 1, 0.95])
+    # --- UPDATED: Simpler tight_layout for automatic adjustment ---
+    fig.tight_layout() 
     fig.savefig(plot_path)
     plt.close(fig)
-    print(f"\nSaved combined parity plot to: {plot_path}")
+    print(f"\nSaved combined vertical parity plot to: {plot_path}")
+    
+    # ... (rest of the script for printing console output)
 
 if __name__ == "__main__":
     main()
