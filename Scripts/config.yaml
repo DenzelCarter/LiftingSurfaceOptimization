@@ -22,7 +22,7 @@ paths:
 
   # DOE
   doe_dir:             "../Experiment/doe"
-  doe_csv:             "../Experiment/doe/doe_test_plan_03.csv"
+  doe_csv:             "../Experiment/doe/doe_test_plan_04.csv"
 
   # Outputs
   outputs_dir:         "../Experiment/outputs"
