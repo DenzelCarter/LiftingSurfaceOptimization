@@ -1,5 +1,5 @@
 # Scripts/04_evaluate_models.py
-# Evaluates dual-output models using LOOCV and generates separate parity plots for hover and cruise.
+# Evaluates hover surrogate models using LOOCV, generates parity plots and feature importance plots.
 
 import os
 import pandas as pd
@@ -10,125 +10,132 @@ from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
 from scipy.stats import spearmanr
 from joblib import load
 import xgboost as xgb
-from path_utils import load_cfg
+from pathlib import Path
+import yaml
 
-def evaluate_and_plot(df_mode, models, mode_name, unit_name, plot_dir):
-    """
-    Performs LOOCV evaluation and generates parity plots for a specific flight mode.
+# --- Configuration Loading ---
+def load_config() -> dict:
+    """Loads config.yaml from the same directory as the script."""
+    try:
+        script_dir = Path(__file__).parent
+        config_path = script_dir / "config.yaml"
+        with open(config_path, "r") as f:
+            return yaml.safe_load(f)
+    except FileNotFoundError:
+        raise SystemExit(f"Configuration file not found. Ensure 'config.yaml' is in the same folder as this script.")
 
-    Returns:
-        A list of dictionaries containing the performance metrics for each model.
-    """
-    print(f"\n--- Evaluating Models for {mode_name.upper()} Performance ---")
+def main():
+    C = load_config()
+    P = C["paths"]
+    GEO_COLS = C["geometry_cols"]
+    script_dir = Path(__file__).parent
+
+    # --- 1. Load Data and Trained Models ---
+    master_parquet_path = (script_dir / P["master_parquet"]).resolve()
+    if not master_parquet_path.exists():
+        raise SystemExit(f"Error: Master dataset not found at '{master_parquet_path}'")
+        
+    df_full = pd.read_parquet(master_parquet_path)
     
-    # --- 1. Prepare Data for this Flight Mode ---
-    features = ['AR', 'lambda', 'aoaRoot (deg)', 'aoaTip (deg)', 'material', 'flight_mode', 'op_point']
+    # Filter for hover data only
+    df_hover = df_full[df_full['flight_mode'] == 'hover'].copy()
+    if df_hover.empty:
+        raise SystemExit("Error: No hover data found in the master dataset.")
+
+    # Load pre-trained hover models
+    models_dir = (script_dir / P["outputs_models"]).resolve()
+    try:
+        xgb_hover = xgb.XGBRegressor()
+        xgb_hover.load_model(models_dir / "xgboost_hover_model.json")
+        gpr_hover = load(models_dir / "gpr_hover_model.joblib")
+        models = {"XGBoost": xgb_hover, "GPR": gpr_hover}
+    except Exception as e:
+        raise SystemExit(f"Error loading models from '{models_dir}'. Have you run 03_train_models.py yet? Details: {e}")
+
+    # --- 2. Prepare Data for Evaluation ---
+    features = [*GEO_COLS, 'op_point']
     target = 'performance'
     
-    X_raw = df_mode[features]
-    y = df_mode[target]
-    X = pd.get_dummies(X_raw, columns=['material', 'flight_mode'])
+    X = df_hover[features]
+    y = df_hover[target]
 
-    # Ensure all possible columns are present, filling missing with 0
-    all_cols = X.columns
-    for model_name, model in models.items():
-        try:
-            model_cols = model.get_booster().feature_names
-            for col in model_cols:
-                if col not in all_cols:
-                    X[col] = 0
-            X = X[model_cols]
-            break # Assume all models were trained on the same feature set
-        except (AttributeError, ValueError): # GPR doesn't have get_booster
-            continue
-
-    # --- 2. Create Figure and Evaluate Models ---
-    fig, axes = plt.subplots(2, 1, figsize=(6, 10))
-    if not isinstance(axes, np.ndarray): axes = [axes] # Handle case of 1 model
-    
+    # --- 3. Evaluate Models using Leave-One-Out Cross-Validation (LOOCV) ---
+    print(f"\n--- Evaluating Hover Models on {len(X)} data points using LOOCV ---")
     loo = LeaveOneOut()
-    subplot_labels = ['(a)', '(b)']
     all_metrics = []
 
-    for i, (ax, (name, model)) in enumerate(zip(axes, models.items())):
+    for name, model in models.items():
         predictions = cross_val_predict(model, X, y, cv=loo)
         
-        # Calculate metrics
         r2 = r2_score(y, predictions)
         mae = mean_absolute_error(y, predictions)
         rmse = np.sqrt(mean_squared_error(y, predictions))
         spearman_corr, _ = spearmanr(y, predictions)
         
-        metrics = {
-            'Flight Mode': mode_name, 'Model': name, 'R2': r2, 'MAE': mae, 'RMSE': rmse, 'Spearman': spearman_corr
-        }
+        metrics = {'Model': name, 'R2': r2, 'MAE': mae, 'RMSE': rmse, 'Spearman': spearman_corr}
         all_metrics.append(metrics)
-        print(pd.DataFrame([metrics]).to_string(index=False))
+    
+    df_metrics = pd.DataFrame(all_metrics)
+    print("\n--- Hover Model Performance (LOOCV) ---")
+    print(df_metrics.to_string(index=False))
 
-        # Create Parity Plot
+    # Save metrics to a CSV table
+    tables_dir = (script_dir / P["outputs_tables"]).resolve()
+    tables_dir.mkdir(parents=True, exist_ok=True)
+    metrics_path = tables_dir / "04_hover_model_performance.csv"
+    df_metrics.to_csv(metrics_path, index=False, float_format="%.4f")
+    print(f"\nSaved performance metrics to: {metrics_path}")
+
+    # --- 4. Generate and Save Parity Plots ---
+    plots_dir = (script_dir / P["outputs_plots"]).resolve()
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    
+    fig_parity, axes = plt.subplots(1, 2, figsize=(12, 6))
+    subplot_labels = ['(a)', '(b)']
+
+    for i, (ax, (name, model)) in enumerate(zip(axes, models.items())):
+        predictions = cross_val_predict(model, X, y, cv=loo)
+        
         ax.scatter(y, predictions, edgecolors=(0, 0, 0, 0.6), alpha=0.8, s=30)
         lims = [np.min([y.min(), predictions.min()])*0.98, np.max([y.max(), predictions.max()])*1.02]
         ax.plot(lims, lims, 'k--', alpha=0.75, zorder=0)
         ax.set_aspect('equal'); ax.set_xlim(lims); ax.set_ylim(lims)
         
-        ax.set_title(f"{subplot_labels[i]} {name} Model - {mode_name} Performance")
-        ax.set_xlabel(f"Measured {unit_name}")
-        ax.set_ylabel(f"Predicted {unit_name} (LOOCV)")
+        ax.set_title(f"{subplot_labels[i]} {name} Model")
+        ax.set_xlabel("Measured Hover Efficiency")
+        ax.set_ylabel("Predicted Hover Efficiency (LOOCV)")
         ax.grid(True, linestyle='--', alpha=0.5)
 
-        stats_text = (f"R² = {r2:.4f}\nMAE = {mae:.4f}\nRMSE = {rmse:.4f}\nSpearman's ρ = {spearman_corr:.4f}")
-        ax.text(0.05, 0.95, stats_text, transform=ax.transAxes, fontsize=10,
+        r2 = r2_score(y, predictions)
+        stats_text = f"R² = {r2:.3f}"
+        ax.text(0.05, 0.95, stats_text, transform=ax.transAxes, fontsize=12,
                 verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
 
-    # --- 3. Save the Figure ---
-    plot_path = os.path.join(plot_dir, f"parity_plots_{mode_name.lower()}.pdf")
-    fig.tight_layout()
-    fig.savefig(plot_path)
-    plt.close(fig)
-    print(f"\nSaved {mode_name} parity plot to: {plot_path}")
+    fig_parity.suptitle("Hover Performance Parity Plots (LOOCV)", fontsize=16)
+    fig_parity.tight_layout(rect=[0, 0, 1, 0.96])
     
-    return all_metrics
+    parity_plot_path = plots_dir / "04_hover_parity_plots.pdf"
+    fig_parity.savefig(parity_plot_path)
+    plt.close(fig_parity)
+    print(f"Saved hover parity plot to: {parity_plot_path}")
 
-def main():
-    C = load_cfg()
-    P = C["paths"]
-
-    # --- 1. Load Data and Models ---
-    input_path = P["master_parquet"]
-    os.makedirs(P["outputs_plots"], exist_ok=True)
-
-    df_all = pd.read_parquet(input_path)
+    # --- 5. Generate and Save Feature Importance Plot ---
+    fig_importance, ax = plt.subplots(figsize=(10, 6))
     
-    # Load models
-    xgb_model = xgb.XGBRegressor()
-    xgb_model.load_model(os.path.join(P["outputs_models"], "xgboost_dual_model.json"))
-    gpr_model = load(os.path.join(P["outputs_models"], "gpr_dual_model.joblib"))
-    models = {"XGBoost": xgb_model, "GPR": gpr_model}
+    importances = xgb_hover.feature_importances_
+    sorted_idx = importances.argsort()
     
-    # --- 2. Split Data by Flight Mode ---
-    df_hover = df_all[df_all['flight_mode'] == 'hover'].copy()
-    df_cruise = df_all[df_all['flight_mode'] == 'cruise'].copy()
+    ax.barh(np.array(features)[sorted_idx], importances[sorted_idx], color='skyblue')
+    ax.set_xlabel("XGBoost Feature Importance")
+    ax.set_title("Hover Model Feature Importance")
+    
+    fig_importance.tight_layout()
+    
+    importance_plot_path = plots_dir / "04_hover_feature_importance.pdf"
+    fig_importance.savefig(importance_plot_path)
+    plt.close(fig_importance)
+    print(f"Saved feature importance plot to: {importance_plot_path}")
 
-    # --- 3. Evaluate and Plot for Each Mode ---
-    hover_metrics = evaluate_and_plot(
-        df_mode=df_hover, models=models, mode_name="Hover", 
-        unit_name="Efficiency", plot_dir=P["outputs_plots"]
-    )
-    
-    cruise_metrics = evaluate_and_plot(
-        df_mode=df_cruise, models=models, mode_name="Cruise", 
-        unit_name="L/D Ratio", plot_dir=P["outputs_plots"]
-    )
-
-    # --- 4. Display Combined Metrics Table ---
-    df_metrics = pd.DataFrame(hover_metrics + cruise_metrics)
-    print("\n\n--- Combined Model Performance (LOOCV) ---")
-    print(df_metrics.to_string(index=False))
-    
-    # Save metrics to a CSV for the paper
-    metrics_path = os.path.join(P["outputs_tables"], "model_loocv_performance.csv")
-    df_metrics.to_csv(metrics_path, index=False, float_format="%.4f")
-    print(f"\nSaved performance metrics to: {metrics_path}")
 
 if __name__ == "__main__":
     main()
