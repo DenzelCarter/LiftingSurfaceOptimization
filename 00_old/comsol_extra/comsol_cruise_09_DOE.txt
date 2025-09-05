@@ -1,0 +1,8 @@
+% Model:              LS_cruise.mph
+% Version:            COMSOL 6.3.0.420
+% Date:               Sep 4 2025, 10:35
+% Table:              Accumulated Probe Table 6 - 
+% AR                     lambda                   aoa_root (deg)           aoa_tip (deg)            U_cruise (m/s)           Max wall resolution (1), wall_res_max Lift (N), Lift           Drag (N), Drag           Lift over drag (1), L_D  Cruise velocity (m/s), U_cruise
+28.757                   0.7198                   12.4532                  7.7208                   25                       6.51584315497565                      1.3009209796639452       0.2508549904104115       5.185948174822325        25
+29.7489                  0.8788                   11.1194                  3.3416                   25                       6.463572921723838                     0.7905035684185426       0.18810058559993773      4.202557721430104        25
+19.9275                  0.8914                   17.3303                  4.7191                   25                       6.52065285788967                      2.2929167249233093       0.3979482683818699       5.76184621746622         25
