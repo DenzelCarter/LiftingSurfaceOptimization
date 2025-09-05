@@ -1,82 +1,89 @@
-#!/usr/bin/env python3
+# Scripts/02_quick_plots.py
+# Generates sanity-check plots for both hover (eta vs. DL) and
+# cruise (L/D vs. alpha) performance from the processed master dataset.
+
 import os
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
 from path_utils import load_cfg
 
-def pick_cols(df: pd.DataFrame):
-    """Robustly finds the required column names for plotting."""
-    rpm_candidates = ["rpm_bin_center", "rpm"]
-    eff_candidates = ["prop_efficiency", "prop_efficiency_mean"]
-    prop_candidates = ["filename", "prop_name"]
+def generate_performance_plot(df, xlabel, ylabel, output_filename, title):
+    """
+    Creates and saves a performance plot for a given flight mode.
+    """
+    if df.empty:
+        print(f"Skipping plot '{title}' because no data was found.")
+        return
 
-    def _find(candidates):
-        for c in candidates:
-            if c in df.columns:
-                return c
-        return None
+    fig, ax = plt.subplots(figsize=(10, 7))
+    
+    # Sort data to ensure lines are drawn correctly
+    df = df.sort_values(['filename', 'op_point'])
+    
+    for filename, group in df.groupby('filename'):
+        ax.plot(
+            group['op_point'], 
+            group['performance'], 
+            label=filename.replace('.csv', ''), 
+            marker='o', 
+            linestyle='-',
+            markersize=4, 
+            alpha=0.8
+        )
+    
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.grid(True, which='both', linestyle='--', alpha=0.6)
+    
+    # Optional: Keep title for quick checks, but it's not needed for the paper
+    # ax.set_title(title)
+    
+    # Place the legend outside the plot area to avoid clutter.
+    ax.legend(title="Lifting Surface", bbox_to_anchor=(1.04, 1), loc="upper left")
+    
+    fig.tight_layout(rect=[0, 0, 0.82, 1]) # Adjust for external legend
 
-    rpm_col = _find(rpm_candidates)
-    eff_col = _find(eff_candidates)
-    prop_col = _find(prop_candidates)
-
-    if not all([rpm_col, eff_col, prop_col]):
-        raise KeyError(f"Could not find all required columns. Found: RPM='{rpm_col}', Eff='{eff_col}', Prop='{prop_col}'")
-    return rpm_col, eff_col, prop_col
+    fig.savefig(output_filename)
+    plt.close(fig)
+    print(f"Wrote plot to: {output_filename}")
 
 def main():
     C = load_cfg()
     P = C["paths"]
-    OUTDIR = P["outputs_plots_dir"]
     
     input_path = P["master_parquet"]
     if not os.path.exists(input_path):
         raise SystemExit(f"Error: Master dataset not found at '{input_path}'")
         
     print(f"Reading data from: {input_path}")
-    df = pd.read_parquet(input_path)
+    df_all = pd.read_parquet(input_path)
     
-    rpm_col, eff_col, prop_col = pick_cols(df)
-        
-    df = df.sort_values([prop_col, rpm_col])
-    os.makedirs(OUTDIR, exist_ok=True)
+    os.makedirs(P["outputs_plots"], exist_ok=True)
 
-    # --- Define a set of unique visual identifiers ---
-    markers = ['o', 's', '^', 'D', 'v', 'p', '*', 'X']
-    linestyles = ['-', '--', ':', '-.']
+    # --- 1. Split data by flight mode ---
+    df_hover = df_all[df_all['flight_mode'] == 'hover'].copy()
+    df_cruise = df_all[df_all['flight_mode'] == 'cruise'].copy()
 
-    # --- Generate Combined Plot ---
-    fig, ax = plt.subplots(figsize=(10, 7))
-    
-    # Use enumerate to get a unique index for each propeller
-    for i, (name, group) in enumerate(df.groupby(prop_col)):
-        # Cycle through markers and linestyles to create unique visuals
-        marker = markers[i % len(markers)]
-        linestyle = linestyles[(i // len(markers)) % len(linestyles)]
-        
-        ax.plot(
-            group[rpm_col], 
-            group[eff_col], 
-            label=name, 
-            marker=marker, 
-            linestyle=linestyle,
-            markersize=5, 
-            alpha=0.8
-        )
-    
-    ax.set_xlabel("RPM Bin Center")
-    ax.set_ylabel("Propeller Efficiency")
-    ax.set_title("Propeller Efficiency vs. RPM")
-    ax.grid(True, which='both', linestyle='--', alpha=0.6)
-    
-    ax.legend(title="Propeller", bbox_to_anchor=(1.04, 1), loc="upper left")
-    
-    out_all_path = os.path.join(OUTDIR, "rpm_vs_efficiency_all_props.pdf")
-    # Adjust layout to make space for the legend
-    fig.tight_layout(rect=[0, 0, 0.85, 1]) 
-    fig.savefig(out_all_path)
-    plt.close(fig)
-    print(f"Wrote combined plot to: {out_all_path}")
+    # --- 2. Generate Hover Plot (Efficiency vs. Disk Loading) ---
+    hover_plot_path = os.path.join(P["outputs_plots"], "02_hover_performance.pdf")
+    generate_performance_plot(
+        df=df_hover,
+        title="Hover Performance",
+        xlabel="Disk Loading ($T/A$, N/m$^2$)",
+        ylabel="Hover Efficiency ($\eta_{hover}$)",
+        output_filename=hover_plot_path
+    )
+
+    # --- 3. Generate Cruise Plot (L/D vs. Angle of Attack) ---
+    cruise_plot_path = os.path.join(P["outputs_plots"], "02_cruise_performance.pdf")
+    generate_performance_plot(
+        df=df_cruise,
+        title="Cruise Performance",
+        xlabel="Angle of Attack ($\alpha_r$, deg)",
+        ylabel="Lift-to-Drag Ratio (L/D)",
+        output_filename=cruise_plot_path
+    )
 
 if __name__ == "__main__":
     main()

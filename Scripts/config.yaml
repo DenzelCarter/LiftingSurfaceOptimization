@@ -1,48 +1,42 @@
 # =========================
-# PATHS (no "tools" folder)
+# PATHS
 # =========================
 paths:
-  # Roots
-  exp_root:            "../Experiment"
+  # --- Data Directories ---
+  data_hover_comsol:   "../Experiment/data/hover/comsol"
+  data_hover_raw:   "../Experiment/data/hover/raw"
+  data_hover_tare:  "../Experiment/data/hover/tare"
+  data_cruise_comsol:   "../Experiment/data/cruise/comsol"
+  data_cruise_raw:  "../Experiment/data/cruise/raw"
+  data_cruise_tare: "../Experiment/data/cruise/tare"
+  data_processed_dir: "../Experiment/data/processed" # Renamed for clarity
 
-  # Data
-  data_dir:            "../Experiment/data"
-  data_bench_dir:      "../Experiment/data/bench"
-  data_tare_dir:       "../Experiment/data/bench/tare"
-  data_tunnel_dir:     "../Experiment/data/tunnel"
-  data_processed_dir:  "../Experiment/data/processed"         # parquet, cleaned tables, etc.
-  master_parquet:      "../Experiment/data/processed/master_dataset.parquet"
+  # --- Key File Paths ---
+  master_parquet:   "../Experiment/data/processed/master_dataset.parquet"
+  doe_csv:          "../Experiment/doe/doe_test_plan_01.csv"
 
-  # Airfoil polars (used by BEMT & LL-polar)
-  airfoil_csv:         "../Experiment/data/airfoils/naca0012_all_re.csv"
+  # --- Output Directories ---
+  outputs_models:   "../Experiment/outputs/models"
+  outputs_plots:    "../Experiment/outputs/plots"
+  outputs_tables:   "../Experiment/outputs/tables"
 
-  # COMSOL TXT (inputs)
-  comsol_vtol_glob:    "../Experiment/data/comsol/vtol/*.txt"
-  comsol_cruise_glob:  "../Experiment/data/comsol/cruise/*.txt"
+# =========================
+# DATA PROCESSING PARAMETERS
+# =========================
+hover_process:
+  rpm_window: [800, 1600] # The RPM range with a good signal-to-noise ratio
+  rpm_n_bins: 5          # The number of bins to average over
 
-  # DOE
-  doe_dir:             "../Experiment/doe"
-  doe_csv:             "../Experiment/doe/doe_test_plan_04.csv"
-
-  # Outputs
-  outputs_dir:         "../Experiment/outputs"
-  outputs_tables_dir:  "../Experiment/outputs/tables"         # all CSVs written here
-  outputs_plots_dir:   "../Experiment/outputs/plots"          # all PDFs here
-
-# Processing of raw data
-process:
-  rpm_window: [800, 1600]   # set your band; or null to use all rows
-  rpm_bin_width: 150     # Desired RPM bin width
-  rpm_n_bins: 5              # 1 = single average over window; >1 = split equally
-  use_tare: true             # subtract tare (if available)
-
+cruise_process:
+  airspeed_filter_ms: [18.0, 22.0] # Filters data to only include points within this speed range (m/s)
+  drag_moment_arm_m: 0.070
 
 # =========================
 # FLUIDS
 # =========================
 fluids:
-  rho: 1.225     # kg/m^3
-  mu:  1.81e-5   # Pa·s
+  rho: 1.204   # kg/m^3 density of air at 20C, 1 atm
+  mu:  1.81e-5 # Pa·s dynamic viscosity of air at 20C, 1 atm
 
 # =========================
 # GEOMETRY (global constants)
@@ -50,81 +44,23 @@ fluids:
 geometry:
   r_hub_m:        0.046      # hub radius (m)
   span_blade_m:   0.184      # blade span (m) -> r_tip = r_hub_m + span_blade_m
-  n_blades:       2
-  n_elems:        16         # BEMT radial elements
-
-# =========================
-# BEMT (hover)
-# =========================
-bemt:
-  rpm_min:          350
-  rpm_max:          4000
-  rpm_step:         50
-  bin_rpm:          150      # must match your processing binning
-  max_iters:        60
-  relax:            0.5
-  phi_fallback_deg: 2.5
-
-# =========================
-# LIFTING-LINE (cruise)
-# =========================
-cruise_ll:
-  use_polar:  true
-  target_CL:  0.50
-  CD0:        0.013          # only used if polar lookup fails
-  K2:         0.020
-  e_base:     0.86
-  e_taper_k:  0.06
-
-cruise_ll_polar:
-  V_cruise:   20.0           # m/s (set to your tunnel/cruise target)
-  span_ref_m: null           # if null, code uses 2 * span_blade_m
+  n_blades:       2          # number of blades
 
 # =========================
 # MODEL FEATURES & BOUNDS
 # =========================
-geometry_cols: ["AR", "lambda", "aoaRoot (deg)", "aoaTip (deg)"]
+geometry_cols: ["AR", "lambda", "i_r (deg)", "epsilon (deg)"]
 
 bounds:
-  AR:            [6.0, 10.0]
-  lambda:        [0.5, 1.0]
-  aoaRoot (deg): [10.0, 20.0]
-  aoaTip (deg):  [3.0, 8.0]
+  AR:             [18.75, 31.25] # Aspect Ratio
+  lambda:         [0.5, 1.0]   # Taper Ratio
+  i_r (deg):      [10.0, 20.0] # Angle of Incidence at Root (degrees)
+  epsilon (deg):  [-14.8, -3.2] # Twist (tip - root) (degrees)
 
 # =========================
-# SELECTION / OPTIMIZATION
+# OPTIMIZATION PARAMETERS
 # =========================
-selection:
-  w_hover: 0.5                 # weight for hover in Dual Mode Score
-  w_exploit: 0.6               # for select_dual (exploit vs explore)
-  use_priors: true
-  use_priors_in_explot: true
-  w_data_vs_priors_hover: 0.85
-  w_data_vs_priors_cruise: 0.85
-
-  priors_weights:
-    hover:  { bemt: 0.2, cfd: 0.8 }
-    cruise: { ll: 0.4,  cfd: 0.6 }
-
-  # Independent modes (each channel):
-  #   auto | data_only | priors_only | hybrid
-  opt_mode_hover:  "priors_only"
-  opt_mode_cruise: "priors_only"
-
-  # Optimization sampling sizes
-  samples:
-    coarse: 5000
-    refine: 2000
-
-# =========================
-# PRIORS RUNTIME SWITCHES
-# =========================
-priors_runtime:
-  hover_bemt_mode: "surrogate"   # surrogate | direct
-  direct_bemt_max_samples: 800
-  use_cfd_vtol: true
-  use_cfd_cruise: true
-
-plots:
-  apply_prior_calibration: true     # apply y = a*x + b from prior_calibration.csv
-  show_raw_and_calibrated: true    # if true, plot both raw & calibrated priors
+optimization:
+  w_hover: [0.0, 0.25, 0.5, 0.75, 1.0]
+  text_offset_x: 0.01
+  text_offset_y: 0.05
