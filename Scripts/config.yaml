@@ -24,8 +24,9 @@ paths:
 # DATA PROCESSING PARAMETERS
 # =========================
 hover_process:
-  rpm_window: [800, 1600] # The RPM range with a good signal-to-noise ratio
-  rpm_n_bins: 5          # The number of bins to average over
+  # SNR thresholds for automatic data filtering
+  thrust_snr_threshold: 3.0
+  torque_snr_threshold: 3.0
 
 cruise_process:
   airspeed_filter_ms: [18.0, 22.0] # Filters data to only include points within this speed range (m/s)

@@ -1,89 +1,82 @@
 # Scripts/02_quick_plots.py
-# Generates sanity-check plots for both hover (eta vs. DL) and
-# cruise (L/D vs. alpha) performance from the processed master dataset.
+# Generates a quick plot of hover efficiency vs. disk loading for all tested propellers.
 
 import os
 import pandas as pd
-import numpy as np
 import matplotlib.pyplot as plt
-from path_utils import load_cfg
+import seaborn as sns
+from pathlib import Path
+import yaml
 
-def generate_performance_plot(df, xlabel, ylabel, output_filename, title):
-    """
-    Creates and saves a performance plot for a given flight mode.
-    """
-    if df.empty:
-        print(f"Skipping plot '{title}' because no data was found.")
-        return
-
-    fig, ax = plt.subplots(figsize=(10, 7))
-    
-    # Sort data to ensure lines are drawn correctly
-    df = df.sort_values(['filename', 'op_point'])
-    
-    for filename, group in df.groupby('filename'):
-        ax.plot(
-            group['op_point'], 
-            group['performance'], 
-            label=filename.replace('.csv', ''), 
-            marker='o', 
-            linestyle='-',
-            markersize=4, 
-            alpha=0.8
-        )
-    
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel(ylabel)
-    ax.grid(True, which='both', linestyle='--', alpha=0.6)
-    
-    # Optional: Keep title for quick checks, but it's not needed for the paper
-    # ax.set_title(title)
-    
-    # Place the legend outside the plot area to avoid clutter.
-    ax.legend(title="Lifting Surface", bbox_to_anchor=(1.04, 1), loc="upper left")
-    
-    fig.tight_layout(rect=[0, 0, 0.82, 1]) # Adjust for external legend
-
-    fig.savefig(output_filename)
-    plt.close(fig)
-    print(f"Wrote plot to: {output_filename}")
+# --- Configuration Loading ---
+def load_config() -> dict:
+    """Loads config.yaml from the same directory as the script."""
+    try:
+        script_dir = Path(__file__).parent
+        config_path = script_dir / "config.yaml"
+        with open(config_path, "r") as f:
+            return yaml.safe_load(f)
+    except FileNotFoundError:
+        raise SystemExit(f"Configuration file not found. Ensure 'config.yaml' is in the same folder as this script.")
 
 def main():
-    C = load_cfg()
+    C = load_config()
     P = C["paths"]
-    
-    input_path = P["master_parquet"]
-    if not os.path.exists(input_path):
-        raise SystemExit(f"Error: Master dataset not found at '{input_path}'")
+    script_dir = Path(__file__).parent
+
+    # --- 1. Load Processed Data ---
+    master_parquet_path = (script_dir / P["master_parquet"]).resolve()
+    if not master_parquet_path.exists():
+        raise SystemExit(f"Error: Master dataset not found at '{master_parquet_path}'. Please run 01_process_data.py first.")
         
-    print(f"Reading data from: {input_path}")
-    df_all = pd.read_parquet(input_path)
+    df_full = pd.read_parquet(master_parquet_path)
     
-    os.makedirs(P["outputs_plots"], exist_ok=True)
+    # --- MODIFIED: Filter for hover data only ---
+    df_hover = df_full[df_full['flight_mode'] == 'hover'].copy()
+    if df_hover.empty:
+        raise SystemExit("No hover data found in the master dataset to plot.")
 
-    # --- 1. Split data by flight mode ---
-    df_hover = df_all[df_all['flight_mode'] == 'hover'].copy()
-    df_cruise = df_all[df_all['flight_mode'] == 'cruise'].copy()
+    print(f"Plotting hover performance for {df_hover['filename'].nunique()} unique propellers.")
 
-    # --- 2. Generate Hover Plot (Efficiency vs. Disk Loading) ---
-    hover_plot_path = os.path.join(P["outputs_plots"], "02_hover_performance.pdf")
-    generate_performance_plot(
-        df=df_hover,
-        title="Hover Performance",
-        xlabel="Disk Loading ($T/A$, N/m$^2$)",
-        ylabel="Hover Efficiency ($\eta_{hover}$)",
-        output_filename=hover_plot_path
+    # --- 2. Create Hover Performance Plot (Efficiency vs. Disk Loading) ---
+    plt.style.use('seaborn-v0_8-whitegrid')
+    fig, ax = plt.subplots(figsize=(12, 8))
+
+    # Use seaborn to plot, creating a distinct line for each propeller (filename)
+    sns.lineplot(
+        data=df_hover,
+        x='op_point',
+        y='performance',
+        hue='filename',
+        marker='o',
+        markersize=5,
+        legend='full',
+        ax=ax
     )
 
-    # --- 3. Generate Cruise Plot (L/D vs. Angle of Attack) ---
-    cruise_plot_path = os.path.join(P["outputs_plots"], "02_cruise_performance.pdf")
-    generate_performance_plot(
-        df=df_cruise,
-        title="Cruise Performance",
-        xlabel="Angle of Attack ($\alpha_r$, deg)",
-        ylabel="Lift-to-Drag Ratio (L/D)",
-        output_filename=cruise_plot_path
-    )
+    # --- 3. Customize and Save the Plot ---
+    ax.set_title('Hover Performance: Efficiency vs. Disk Loading', fontsize=16)
+    ax.set_xlabel('Disk Loading (T/A, N/m²)', fontsize=12)
+    ax.set_ylabel('Hover Efficiency (η_hover)', fontsize=12)
+    
+    # Improve legend readability
+    handles, labels = ax.get_legend_handles_labels()
+    # Clean up labels if they are long file paths
+    cleaned_labels = [os.path.splitext(os.path.basename(label))[0] for label in labels]
+    ax.legend(handles, cleaned_labels, title='Lifting Surface', bbox_to_anchor=(1.05, 1), loc='upper left')
+
+    plt.tight_layout(rect=[0, 0, 0.85, 1]) # Adjust layout to make room for legend
+
+    # Save the figure
+    plots_dir = (script_dir / P["outputs_plots"]).resolve()
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    
+    plot_path = plots_dir / "02_hover_performance_vs_DL.pdf"
+    fig.savefig(plot_path)
+    plt.close(fig)
+
+    print(f"\nSuccessfully generated hover performance plot.")
+    print(f"Output saved to: '{plot_path}'")
 
 if __name__ == "__main__":
     main()
