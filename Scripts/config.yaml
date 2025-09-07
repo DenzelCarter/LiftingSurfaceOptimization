@@ -62,6 +62,6 @@ bounds:
 # OPTIMIZATION PARAMETERS
 # =========================
 optimization:
-  w_hover: [0.0, 0.25, 0.5, 0.75, 1.0]
-  text_offset_x: 0.01
-  text_offset_y: 0.05
+  w_hover: [0.0, 0.25, 0.5, 0.75, 1.0] # Weighting for hover in multi-objective optimization
+  hover_op_points: [2, 4, 6, 8, 10]   # Representative Disk Loadings (N/m^2)
+  cruise_op_points: [4, 6, 8, 10, 12] # Representative Root Angles of Attack (deg)
