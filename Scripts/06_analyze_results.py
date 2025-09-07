@@ -1,6 +1,6 @@
 # Scripts/06_analyze_results.py
 # Analyzes optimization results and generates a Pareto front plot, 
-# including the original training data for context.
+# including the original training data and clear labels for optimized points.
 
 import os
 import pandas as pd
@@ -23,9 +23,9 @@ def load_config() -> dict:
     except FileNotFoundError:
         raise SystemExit(f"Configuration file not found. Ensure 'config.yaml' is in the same folder as this script.")
 
-def get_improvement_indices(df_designs, model_hover, model_cruise, baselines, C):
+def get_performance_indices(df_designs, model_hover, model_cruise, baselines, C):
     """
-    Calculates the normalized I_hover and I_cruise improvement scores for a dataframe of designs.
+    Calculates both normalized and absolute performance indices for a dataframe of designs.
     """
     OPT = C["optimization"]
     hover_op_points = np.array(OPT.get("hover_op_points", [2, 4, 6, 8, 10]))
@@ -42,12 +42,16 @@ def get_improvement_indices(df_designs, model_hover, model_cruise, baselines, C)
         df_hover_input = pd.DataFrame([[*X_geom, op] for op in hover_op_points], columns=hover_features)
         df_cruise_input = pd.DataFrame([[*X_geom, op] for op in cruise_op_points], columns=cruise_features)
         
-        median_hover_eta = np.median(model_hover.predict(df_hover_input))
-        median_cruise_ld = np.median(model_cruise.predict(df_cruise_input))
+        abs_hover_eta = np.median(model_hover.predict(df_hover_input))
+        abs_cruise_ld = np.median(model_cruise.predict(df_cruise_input))
 
-        I_hover = (median_hover_eta - baseline_hover_eta) / baseline_hover_eta
-        I_cruise = (median_cruise_ld - baseline_cruise_ld) / baseline_cruise_ld
-        indices.append({'I_hover': I_hover, 'I_cruise': I_cruise})
+        I_hover = (abs_hover_eta - baseline_hover_eta) / baseline_hover_eta
+        I_cruise = (abs_cruise_ld - baseline_cruise_ld) / baseline_cruise_ld
+        
+        indices.append({
+            'I_hover': I_hover, 'I_cruise': I_cruise,
+            'abs_hover_eta': abs_hover_eta, 'abs_cruise_ld': abs_cruise_ld
+        })
         
     return pd.DataFrame(indices)
 
@@ -74,70 +78,72 @@ def main():
     except Exception as e:
         raise SystemExit(f"Error loading models from '{models_dir}'. Have you run 03_train_models.py yet? Details: {e}")
         
-    # --- 2. Establish Baseline and Predict Performance for DOE Points ---
-    print("--- Calculating performance improvement for original DOE points ---")
+    # --- 2. Establish Baselines and Predict Performance for All Designs ---
+    print("--- Calculating performance for original DOE and optimized points ---")
     
-    # Establish baselines from the original data
     baseline_hover_eta = df_full[df_full['flight_mode'] == 'hover']['performance'].median()
     baseline_cruise_ld = df_full[df_full['flight_mode'] == 'cruise']['performance'].median()
     baselines = (baseline_hover_eta, baseline_cruise_ld)
     
-    # Get unique geometries from the experimental and CFD DOEs
     df_hover_designs = df_full[df_full['flight_mode'] == 'hover'].drop_duplicates(subset=GEO_COLS)
     df_cruise_designs = df_full[df_full['flight_mode'] == 'cruise'].drop_duplicates(subset=GEO_COLS)
 
-    # Calculate the full performance indices for each set of designs
-    hover_doe_perf = get_improvement_indices(df_hover_designs, model_hover, model_cruise, baselines, C)
-    cruise_doe_perf = get_improvement_indices(df_cruise_designs, model_hover, model_cruise, baselines, C)
+    hover_doe_perf = get_performance_indices(df_hover_designs, model_hover, model_cruise, baselines, C)
+    cruise_doe_perf = get_performance_indices(df_cruise_designs, model_hover, model_cruise, baselines, C)
+    optimized_perf = get_performance_indices(df_results, model_hover, model_cruise, baselines, C)
     
-    # --- 3. Create and Save Pareto Front Plot ---
-    print("\n--- Generating Pareto Front Plot ---")
-    plt.style.use('seaborn-v0_8-whitegrid')
-    fig, ax = plt.subplots(figsize=(12, 9))
-
-    # Plot the baseline median marker at (0, 0)
-    ax.scatter(0, 0, c='black', s=200, marker='X', label='Baseline DOE Median', zorder=15)
-    
-    # Plot the original DOE points as a background scatter
-    ax.scatter(hover_doe_perf['I_hover'], hover_doe_perf['I_cruise'], 
-               c='lightcoral', s=50, label='Experimental Hover DOE', alpha=0.8, zorder=3)
-    ax.scatter(cruise_doe_perf['I_hover'], cruise_doe_perf['I_cruise'], 
-               c='lightskyblue', s=50, label='CFD Cruise DOE', alpha=0.8, zorder=4)
-
-    # Plot the Pareto Front (optimized results)
-    scatter = ax.scatter(df_results['I_hover'], df_results['I_cruise'], 
-                         c=df_results['w_hover'], cmap='viridis', s=200, 
-                         edgecolors='k', zorder=10, label='Optimized Designs (Pareto Front)')
-    ax.plot(df_results['I_hover'], df_results['I_cruise'], 'k--', alpha=0.6, zorder=5)
-
-    # --- 4. Customize and Save the Plot ---
-    ax.set_title('Pareto Front: Normalized Performance Improvement', fontsize=18)
-    ax.set_xlabel('Hover Improvement Index (I_hover)', fontsize=14)
-    ax.set_ylabel('Cruise Improvement Index (I_cruise)', fontsize=14)
-    ax.grid(True, linestyle='--', alpha=0.7)
-    
-    ax.xaxis.set_major_formatter(mticker.PercentFormatter(xmax=1.0))
-    ax.yaxis.set_major_formatter(mticker.PercentFormatter(xmax=1.0))
-    
-    cbar = fig.colorbar(scatter, ax=ax, fraction=0.046, pad=0.04)
-    cbar.set_label('Hover Weight (w_hover)', fontsize=14)
-    
-    ax.legend(loc='best', fontsize=12)
-    
-    for i, row in df_results.iterrows():
-        ax.text(row['I_hover'], row['I_cruise'] + 0.01, f"w={row['w_hover']}", ha='center', fontsize=9, weight='bold')
-
+    # --- 3. Create and Save Pareto Front Plots ---
     plots_dir = (script_dir / P["outputs_plots"]).resolve()
     plots_dir.mkdir(parents=True, exist_ok=True)
-    
-    plot_path = plots_dir / "06_pareto_front_with_doe.pdf"
-    fig.savefig(plot_path, bbox_inches='tight')
-    plt.close(fig)
+    plot_path = plots_dir / "06_pareto_fronts.pdf"
 
-    print(f"\nSuccessfully generated Pareto front plot.")
-    print(f"Output saved to: '{plot_path}'")
+    with plt.rc_context({'font.size': 12}):
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 20))
+        
+        # --- Plot 1: Normalized Improvement ---
+        ax1.set_title('Pareto Front: Normalized Performance Improvement', fontsize=18)
+        ax1.scatter(0, 0, c='black', s=200, marker='X', label='Baseline DOE Median', zorder=15)
+        ax1.scatter(cruise_doe_perf['I_cruise'], cruise_doe_perf['I_hover'], c='lightskyblue', s=50, label='CFD Cruise DOE', alpha=0.8, zorder=4)
+        ax1.scatter(hover_doe_perf['I_cruise'], hover_doe_perf['I_hover'], c='lightcoral', s=50, label='Experimental Hover DOE', alpha=0.8, zorder=3)
+        scatter1 = ax1.scatter(optimized_perf['I_cruise'], optimized_perf['I_hover'], c=df_results['w_hover'], cmap='viridis', s=200, edgecolors='k', zorder=10)
+        ax1.plot(optimized_perf['I_cruise'], optimized_perf['I_hover'], 'k--', alpha=0.6, zorder=5)
+        ax1.set_xlabel('Cruise Improvement Index (I_cruise)', fontsize=14)
+        ax1.set_ylabel('Hover Improvement Index (I_hover)', fontsize=14)
+        ax1.xaxis.set_major_formatter(mticker.PercentFormatter(xmax=1.0))
+        ax1.yaxis.set_major_formatter(mticker.PercentFormatter(xmax=1.0))
+        ax1.legend(loc='best')
+        ax1.grid(True, linestyle='--', alpha=0.7)
+        cbar1 = fig.colorbar(scatter1, ax=ax1, fraction=0.046, pad=0.04)
+        cbar1.set_label('Hover Weight (w_hover)', fontsize=14)
 
-    # --- 5. Optional: Geometry vs. Weight Plot ---
+        # --- Plot 2: Absolute Performance ---
+        ax2.set_title('Pareto Front: Absolute Performance', fontsize=18)
+        ax2.scatter(baseline_cruise_ld, baseline_hover_eta, c='black', s=200, marker='X', label='Baseline DOE Median', zorder=15)
+        ax2.scatter(cruise_doe_perf['abs_cruise_ld'], cruise_doe_perf['abs_hover_eta'], c='lightskyblue', s=50, label='CFD Cruise DOE', alpha=0.8, zorder=4)
+        ax2.scatter(hover_doe_perf['abs_cruise_ld'], hover_doe_perf['abs_hover_eta'], c='lightcoral', s=50, label='Experimental Hover DOE', alpha=0.8, zorder=3)
+        scatter2 = ax2.scatter(optimized_perf['abs_cruise_ld'], optimized_perf['abs_hover_eta'], c=df_results['w_hover'], cmap='viridis', s=200, edgecolors='k', zorder=10)
+        ax2.plot(optimized_perf['abs_cruise_ld'], optimized_perf['abs_hover_eta'], 'k--', alpha=0.6, zorder=5)
+        ax2.set_xlabel('Cruise Performance (L/D)', fontsize=14)
+        ax2.set_ylabel('Hover Performance (η)', fontsize=14)
+        ax2.legend(loc='best')
+        ax2.grid(True, linestyle='--', alpha=0.7)
+        cbar2 = fig.colorbar(scatter2, ax=ax2, fraction=0.046, pad=0.04)
+        cbar2.set_label('Hover Weight (w_hover)', fontsize=14)
+
+        # --- MODIFIED: Add direct text labels to the optimized points on both plots ---
+        for i, row in df_results.iterrows():
+            # Annotate normalized plot
+            ax1.text(optimized_perf.loc[i, 'I_cruise'], optimized_perf.loc[i, 'I_hover'] + 0.01, f"w={row['w_hover']}", ha='center', fontsize=9, weight='bold')
+            # Annotate absolute plot
+            ax2.text(optimized_perf.loc[i, 'abs_cruise_ld'], optimized_perf.loc[i, 'abs_hover_eta'] + 0.005, f"w={row['w_hover']}", ha='center', fontsize=9, weight='bold')
+
+        fig.tight_layout(pad=3.0)
+        plt.savefig(plot_path, bbox_inches='tight')
+        plt.close(fig)
+
+    print(f"\nSuccessfully generated Pareto front plots: {plot_path}")
+
+    # --- 4. Geometry vs. Weight Plot ---
     fig_geom, axes = plt.subplots(2, 2, figsize=(12, 10))
     fig_geom.suptitle('Optimal Geometry vs. Hover Weight', fontsize=16)
     
@@ -147,7 +153,6 @@ def main():
         ax_i.grid(True, linestyle='--', alpha=0.6)
         
     fig_geom.tight_layout(rect=[0, 0, 1, 0.96])
-    
     geom_plot_path = plots_dir / "06_geometry_vs_weight.pdf"
     fig_geom.savefig(geom_plot_path)
     plt.close(fig_geom)
