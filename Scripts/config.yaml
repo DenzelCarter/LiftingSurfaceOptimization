@@ -50,18 +50,20 @@ geometry:
 # =========================
 # MODEL FEATURES & BOUNDS
 # =========================
-geometry_cols: ["AR", "lambda", "i_r (deg)", "epsilon (deg)"]
+geometry_cols: ["AR", "lambda", "aoa_root (deg)", "twist (deg)"]
 
 bounds:
   AR:             [18.75, 31.25] # Aspect Ratio
   lambda:         [0.5, 1.0]   # Taper Ratio
-  i_r (deg):      [10.0, 20.0] # Angle of Incidence at Root (degrees)
-  epsilon (deg):  [-14.8, -3.2] # Twist (tip - root) (degrees)
+  twist (deg):    [-15, 0] # Twist (tip - root) (degrees)
+  op_speed_hover (rpm): [450, 2000]   # Example: Use your actual min/max RPMs
+  op_speed_cruise (m/s): [20, 20]    # Example: The range you plan to test in CFD
 
 # =========================
 # OPTIMIZATION PARAMETERS
 # =========================
 optimization:
   w_hover: [0.0, 0.25, 0.5, 0.75, 1.0] # Weighting for hover in multi-objective optimization
-  hover_op_points: [2, 4, 6, 8, 10]   # Representative Disk Loadings (N/m^2)
-  cruise_op_points: [4, 6, 8, 10, 12] # Representative Root Angles of Attack (deg)
+  # Set these AoA sweeps to be INSIDE your data range (Hover: 10-20, Cruise: 5-35)
+  hover_op_points: [10, 12, 14, 16, 18, 20]  # A good sweep within your hover data
+  cruise_op_points: [5, 8, 11, 14, 17, 20]   # Covers the likely area of max L/D

@@ -1,4 +1,4 @@
-filename,AR,lambda,i_r (deg),epsilon (deg),material
+filename,AR,lambda,aoa_root (deg),twist (deg),material
 LS_026_01.csv,28.7570,0.7198,12.4532,-4.7324,PLA
 LS_027_01.csv,29.7489,0.8788,11.1194,-7.7778,PLA
 LS_028_01.csv,19.9275,0.8914,17.3303,-12.6112,PLA

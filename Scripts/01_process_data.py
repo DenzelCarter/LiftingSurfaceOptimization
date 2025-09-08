@@ -1,5 +1,6 @@
 # Scripts/01_process_data.py
-# Processes experimental hover data and CFD cruise data to create a unified dataset.
+# Processes data with a consistent column structure:
+# filename, AR, lambda, aoa_root (deg), twist (deg), flight_mode, op_speed, performance
 
 import os
 import glob
@@ -28,7 +29,6 @@ def load_config() -> dict:
 
 # --- Helper Functions ---
 def _find_col(df: pd.DataFrame, preferred_names: list, fallbacks: list = None) -> str | None:
-    """Finds the first matching column in a DataFrame, case-insensitively."""
     fallbacks = fallbacks or []
     df_columns_lower = {col.lower().strip(): col for col in df.columns}
     for name in preferred_names + fallbacks:
@@ -37,40 +37,32 @@ def _find_col(df: pd.DataFrame, preferred_names: list, fallbacks: list = None) -
     return None
 
 def _create_tare_interpolator(tare_dir: str):
-    """Creates high-resolution tare interpolation functions from all raw tare CSVs."""
+    # ... (function is unchanged)
     if not os.path.isdir(tare_dir):
         warnings.warn(f"Tare directory not found at '{tare_dir}'. No tare correction will be applied.")
         return lambda rpm: np.zeros_like(rpm), lambda rpm: np.zeros_like(rpm)
-
     tare_files = glob.glob(os.path.join(tare_dir, "*.csv"))
     if not tare_files:
         warnings.warn("No raw tare files found. No tare correction will be applied.")
         return lambda rpm: np.zeros_like(rpm), lambda rpm: np.zeros_like(rpm)
-
     tare_dfs = [pd.read_csv(f, low_memory=False) for f in tare_files]
     df_raw_tare = pd.concat(tare_dfs, ignore_index=True)
-
     rpm_col = _find_col(df_raw_tare, ["Motor Electrical Speed (RPM)"], ["rpm", "RPM"])
     thrust_col = _find_col(df_raw_tare, ["Thrust (N)"])
     torque_col = _find_col(df_raw_tare, ["Torque (N·m)"])
-
     if not all([rpm_col, thrust_col, torque_col]):
         warnings.warn("Tare files are missing required columns. No tare correction applied.")
         return lambda rpm: np.zeros_like(rpm), lambda rpm: np.zeros_like(rpm)
-
     df_clean_tare = pd.DataFrame({
         'rpm': pd.to_numeric(df_raw_tare[rpm_col], errors="coerce"),
         'thrust': pd.to_numeric(df_raw_tare[thrust_col], errors="coerce"),
         'torque': pd.to_numeric(df_raw_tare[torque_col], errors="coerce")
     }).dropna().sort_values('rpm').drop_duplicates(subset=['rpm'])
-
     if len(df_clean_tare) < 2:
         warnings.warn("Insufficient valid data in tare files for interpolation. No correction applied.")
         return lambda rpm: np.zeros_like(rpm), lambda rpm: np.zeros_like(rpm)
-
     thrust_fn = interp1d(df_clean_tare["rpm"], df_clean_tare["thrust"], kind='linear', bounds_error=False, fill_value=0)
     torque_fn = interp1d(df_clean_tare["rpm"], df_clean_tare["torque"], kind='linear', bounds_error=False, fill_value=0)
-
     print(f"Successfully created tare interpolator from {len(df_clean_tare)} unique data points.")
     return thrust_fn, torque_fn
 
@@ -99,15 +91,12 @@ def main():
     all_cruise_rows = []
 
     # ========================================================================
-    # --- 2. Process HOVER Data (Group-by-Setpoint Method) ---
+    # --- 2. Process HOVER Data ---
     # ========================================================================
     print("\n--- Processing Hover Data ---")
     data_hover_dir = (script_dir / P["data_hover_raw"]).resolve()
     hover_files = glob.glob(os.path.join(data_hover_dir, "*.csv"))
     
-    thrust_snr_threshold = HOVER_CFG.get("thrust_snr_threshold", 0)
-    torque_snr_threshold = HOVER_CFG.get("torque_snr_threshold", 0)
-
     if not hover_files:
         print("No hover data files found. Skipping.")
     else:
@@ -115,7 +104,6 @@ def main():
             basename = os.path.basename(fpath)
             if TARE_PATTERN.search(basename): continue
             try:
-                # ... (Hover processing logic is unchanged) ...
                 df_raw = pd.read_csv(fpath, low_memory=False)
                 esc_col = _find_col(df_raw, ["ESC signal (µs)"])
                 rpm_col = _find_col(df_raw, ["Motor Electrical Speed (RPM)"], ["rpm"])
@@ -144,7 +132,6 @@ def main():
                 for esc_val, group in grouped:
                     if group.empty: continue
                     
-                    n_points = len(group)
                     T_avg, T_std = group['thrust'].mean(), group['thrust'].std()
                     Torque_avg, Torque_std = group['torque'].mean(), group['torque'].std()
                     P_avg = group['mech_power'].mean()
@@ -152,22 +139,18 @@ def main():
                     thrust_snr = np.abs(T_avg) / T_std if T_std > 1e-9 else np.inf
                     torque_snr = np.abs(Torque_avg) / Torque_std if Torque_std > 1e-9 else np.inf
                     
-                    if thrust_snr < thrust_snr_threshold or torque_snr < torque_snr_threshold:
+                    if thrust_snr < HOVER_CFG.get("thrust_snr_threshold", 0) or torque_snr < HOVER_CFG.get("torque_snr_threshold", 0):
                         continue
 
-                    disk_loading = T_avg / disk_A
                     Pi_avg = np.sqrt(np.maximum(T_avg, 0.0)**3 / (2.0 * rho * disk_A))
                     efficiency = np.clip(Pi_avg / P_avg if P_avg > 1e-9 else 0.0, 0.0, 1.0)
                     
+                    # --- MODIFIED: Use RPM as the operational speed for hover ---
                     all_hover_rows.append({
-                        "filename": basename, "flight_mode": "hover",
-                        "op_point": disk_loading,
-                        "performance": efficiency,
-                        "esc_signal_us": esc_val,
-                        "rpm_mean": group['rpm'].mean(),
-                        "n_points": n_points,
-                        "thrust_snr": thrust_snr,
-                        "torque_snr": torque_snr
+                        "filename": basename,
+                        "flight_mode": "hover",
+                        "op_speed": group['rpm'].mean(), # Rotational Speed in RPM
+                        "performance": efficiency
                     })
             except Exception as e:
                 print(f"Error processing hover file {basename}: {e}")
@@ -184,34 +167,27 @@ def main():
     else:
         for fpath in cruise_files:
             try:
-                with open(fpath, 'r') as f:
-                    lines = f.readlines()
-                
+                with open(fpath, 'r') as f: lines = f.readlines()
                 first_data_line_index = 0
                 for i, line in enumerate(lines):
-                    if line.strip().startswith('%'):
-                        first_data_line_index = i + 1
+                    if line.strip().startswith('%'): first_data_line_index = i + 1
                 
-                col_names = ["AR", "lambda", "aoa_root", "aoa_tip", "lift", "drag"]
+                col_names = ["AR", "lambda", "aoa_root_raw", "aoa_tip_raw", "lift", "drag"]
                 df_comsol = pd.read_csv(fpath, sep='\s+', header=None, names=col_names, skiprows=first_data_line_index)
                 
-                df_comsol["i_r (deg)"] = df_comsol["aoa_root"]
-                df_comsol["epsilon (deg)"] = df_comsol["aoa_tip"] - df_comsol["aoa_root"]
-
                 with np.errstate(divide='ignore', invalid='ignore'):
                     ld_ratio = df_comsol['lift'] / df_comsol['drag']
                 ld_ratio.replace([np.inf, -np.inf], 0, inplace=True)
-                df_comsol['performance'] = ld_ratio.fillna(0)
                 
                 for index, row in df_comsol.iterrows():
                     all_cruise_rows.append({
                         "flight_mode": "cruise",
-                        "op_point": row["aoa_root"],
-                        "performance": row["performance"],
+                        "op_speed": 20.0,  # --- MODIFIED: Constant cruise speed in m/s
+                        "performance": ld_ratio.iloc[index],
                         "AR": row["AR"],
                         "lambda": row["lambda"],
-                        "i_r (deg)": row["i_r (deg)"],
-                        "epsilon (deg)": row["epsilon (deg)"]
+                        "aoa_root (deg)": row["aoa_root_raw"],
+                        "twist (deg)": row["aoa_tip_raw"] - row["aoa_root_raw"]
                     })
             except Exception as e:
                 print(f"Error processing COMSOL file {os.path.basename(fpath)}: {e}")
@@ -223,19 +199,24 @@ def main():
         print("\nWarning: No data processed. No output file generated.")
         exit()
 
-    # --- MODIFIED: Separate processing paths for hover and cruise ---
     df_hover_processed = pd.DataFrame(all_hover_rows)
     df_cruise_processed = pd.DataFrame(all_cruise_rows)
 
-    # Merge hover data with DOE to get geometry
     df_hover_final = pd.merge(df_hover_processed, doe_df, on="filename", how="inner")
-    
-    # Concatenate the two complete dataframes
     df_final = pd.concat([df_hover_final, df_cruise_processed], ignore_index=True)
     
-    ordered_cols = ['filename', *GEO_COLS, 'flight_mode', 'op_point', 'performance', 
-                    'esc_signal_us', 'rpm_mean', 'n_points', 'thrust_snr', 'torque_snr']
-    df_final = df_final[[c for c in ordered_cols if c in df_final.columns]]
+    # --- MODIFIED: Define the final, consistent column structure ---
+    final_cols = [
+        'filename',
+        'AR',
+        'lambda',
+        'aoa_root (deg)',
+        'twist (deg)',
+        'flight_mode',
+        'op_speed',
+        'performance'
+    ]
+    df_final = df_final[[c for c in final_cols if c in df_final.columns]]
 
     master_parquet_path = (script_dir / P["master_parquet"]).resolve()
     master_parquet_path.parent.mkdir(parents=True, exist_ok=True)
@@ -244,47 +225,10 @@ def main():
     print(f"\nSuccessfully created master dataset with {len(df_final)} total data points.")
     print(f"Output saved to: '{master_parquet_path}'")
 
-    print("\n--- Final Dataset Snippet ---")
-    print(df_final.head(10).to_string(index=False))
-
-    # ========================================================================
-    # --- 5. Generate and Save Hover SNR Plots ---
-    # ========================================================================
-    print("\n--- Generating Hover SNR Plots ---")
-    plots_dir = (script_dir / P["outputs_plots"] / "snr").resolve()
-    plots_dir.mkdir(parents=True, exist_ok=True)
-
-    df_hover_plots = df_final[df_final['flight_mode'] == 'hover']
-    for filename, prop_df in df_hover_plots.groupby("filename"):
-        prop_df = prop_df.sort_values("esc_signal_us")
-        if prop_df.empty: continue
-        
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
-        # ... (Plotting logic is unchanged) ...
-        fig.suptitle(f'Data Quality Analysis for: {filename}', fontsize=16)
-        ax1.plot(prop_df['esc_signal_us'], prop_df['thrust_snr'], 'o-', color='royalblue', label='Thrust SNR')
-        ax1.axhline(y=thrust_snr_threshold, color='r', linestyle='--', label=f'Thrust Threshold ({thrust_snr_threshold})')
-        ax1.set_ylabel('Thrust SNR (mean/std)')
-        ax1.set_title('Thrust Signal-to-Noise Ratio vs. ESC Signal')
-        ax1.grid(True, linestyle='--', alpha=0.6)
-        ax1.legend()
-        ax2.plot(prop_df['esc_signal_us'], prop_df['torque_snr'], 'o-', color='seagreen', label='Torque SNR')
-        ax2.axhline(y=torque_snr_threshold, color='r', linestyle='--', label=f'Torque Threshold ({torque_snr_threshold})')
-        ax2.set_ylabel('Torque SNR (mean/std)')
-        ax2.set_title('Torque Signal-to-Noise Ratio vs. ESC Signal')
-        ax2.set_xlabel('ESC Signal (µs)')
-        ax2.grid(True, linestyle='--', alpha=0.6)
-        ax2.legend()
-        for index, row in prop_df.iterrows():
-            ax1.text(row['esc_signal_us'], row['thrust_snr'], f" n={row['n_points']}", ha='left', va='center', fontsize=8, color='gray')
-            ax2.text(row['esc_signal_us'], row['torque_snr'], f" n={row['n_points']}", ha='left', va='center', fontsize=8, color='gray')
-        plt.tight_layout(rect=[0, 0, 1, 0.96])
-        plot_filename = f"01_SNR_{os.path.splitext(filename)[0]}.pdf"
-        save_path = plots_dir / plot_filename
-        plt.savefig(save_path)
-        plt.close(fig)
-
-    print(f"Successfully generated {df_hover_plots['filename'].nunique()} SNR plots in '{plots_dir}'")
+    print("\n--- Final Dataset Snippet (Hover) ---")
+    print(df_final[df_final['flight_mode'] == 'hover'].head().to_string())
+    print("\n--- Final Dataset Snippet (Cruise) ---")
+    print(df_final[df_final['flight_mode'] == 'cruise'].head().to_string())
 
 if __name__ == "__main__":
     main()

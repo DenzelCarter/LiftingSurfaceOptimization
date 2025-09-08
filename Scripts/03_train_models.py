@@ -1,5 +1,6 @@
 # Scripts/03_train_models.py
-# Trains separate, dedicated surrogate models for hover and cruise performance.
+# Trains separate surrogate models for hover and cruise performance using the
+# new standardized feature set (op_speed).
 
 import os
 import pandas as pd
@@ -32,12 +33,10 @@ def main():
     # --- 1. Load Unified Dataset ---
     master_parquet_path = (script_dir / P["master_parquet"]).resolve()
     if not master_parquet_path.exists():
-        raise SystemExit(f"Error: Master dataset not found at '{master_parquet_path}'")
+        raise SystemExit(f"Error: Master dataset not found at '{master_parquet_path}'. Please run 01_process_data.py first.")
         
-    print(f"Reading unified dataset from: {master_parquet_path}")
     df_full = pd.read_parquet(master_parquet_path)
     
-    # Create the directory for saving models
     models_dir = (script_dir / P["outputs_models"]).resolve()
     models_dir.mkdir(parents=True, exist_ok=True)
 
@@ -47,12 +46,10 @@ def main():
     print("\n--- Training Hover Surrogate Models ---")
     df_hover = df_full[df_full['flight_mode'] == 'hover'].copy()
     
-    if df_hover.empty:
-        print("No hover data found. Skipping hover model training.")
-    else:
-        # Define the features for the hover model
-        hover_features = [*GEO_COLS, 'op_point'] # op_point is Disk Loading
-        hover_target = 'performance' # performance is Hover Efficiency
+    if not df_hover.empty:
+        # --- MODIFIED: Use the new standardized feature list ---
+        hover_features = [*GEO_COLS, 'op_speed'] # op_speed is RPM for hover
+        hover_target = 'performance'
         
         X_hover = df_hover[hover_features]
         y_hover = df_hover[hover_target]
@@ -63,17 +60,15 @@ def main():
         # Train and Save XGBoost Model for Hover
         xgbr_hover = xgb.XGBRegressor(objective='reg:squarederror', n_estimators=500, learning_rate=0.05, max_depth=5, seed=42)
         xgbr_hover.fit(X_hover, y_hover)
-        xgb_hover_path = models_dir / "xgboost_hover_model.json"
-        xgbr_hover.save_model(xgb_hover_path)
-        print(f"Saved hover XGBoost model to: {xgb_hover_path}")
+        xgbr_hover.save_model(models_dir / "xgboost_hover_model.json")
+        print(f"Saved hover XGBoost model.")
 
         # Train and Save GPR Model for Hover
         gpr_hover_kernel = ConstantKernel(1.0) * Matern(length_scale=1.0, nu=2.5) + WhiteKernel(noise_level=0.1)
         gpr_hover_pipeline = make_pipeline(StandardScaler(), GaussianProcessRegressor(kernel=gpr_hover_kernel, n_restarts_optimizer=10, random_state=42, alpha=1e-10))
         gpr_hover_pipeline.fit(X_hover, y_hover)
-        gpr_hover_path = models_dir / "gpr_hover_model.joblib"
-        dump(gpr_hover_pipeline, gpr_hover_path)
-        print(f"Saved hover GPR model to: {gpr_hover_path}")
+        dump(gpr_hover_pipeline, models_dir / "gpr_hover_model.joblib")
+        print(f"Saved hover GPR model.")
 
     # ========================================================================
     # --- 3. Train CRUISE Surrogate Models ---
@@ -81,12 +76,10 @@ def main():
     print("\n--- Training Cruise Surrogate Models ---")
     df_cruise = df_full[df_full['flight_mode'] == 'cruise'].copy()
 
-    if df_cruise.empty:
-        print("No cruise data found. Skipping cruise model training.")
-    else:
-        # Define the features for the cruise model
-        cruise_features = [*GEO_COLS, 'op_point'] # op_point is Root AoA
-        cruise_target = 'performance' # performance is L/D Ratio
+    if not df_cruise.empty:
+        # --- MODIFIED: Use the new standardized feature list ---
+        cruise_features = [*GEO_COLS, 'op_speed'] # op_speed is cruise velocity for cruise
+        cruise_target = 'performance'
         
         X_cruise = df_cruise[cruise_features]
         y_cruise = df_cruise[cruise_target]
@@ -97,17 +90,15 @@ def main():
         # Train and Save XGBoost Model for Cruise
         xgbr_cruise = xgb.XGBRegressor(objective='reg:squarederror', n_estimators=500, learning_rate=0.05, max_depth=5, seed=42)
         xgbr_cruise.fit(X_cruise, y_cruise)
-        xgb_cruise_path = models_dir / "xgboost_cruise_model.json"
-        xgbr_cruise.save_model(xgb_cruise_path)
-        print(f"Saved cruise XGBoost model to: {xgb_cruise_path}")
+        xgbr_cruise.save_model(models_dir / "xgboost_cruise_model.json")
+        print(f"Saved cruise XGBoost model.")
 
         # Train and Save GPR Model for Cruise
         gpr_cruise_kernel = ConstantKernel(1.0) * Matern(length_scale=1.0, nu=2.5) + WhiteKernel(noise_level=0.1)
         gpr_cruise_pipeline = make_pipeline(StandardScaler(), GaussianProcessRegressor(kernel=gpr_cruise_kernel, n_restarts_optimizer=10, random_state=42, alpha=1e-10))
         gpr_cruise_pipeline.fit(X_cruise, y_cruise)
-        gpr_cruise_path = models_dir / "gpr_cruise_model.joblib"
-        dump(gpr_cruise_pipeline, gpr_cruise_path)
-        print(f"Saved cruise GPR model to: {gpr_cruise_path}")
+        dump(gpr_cruise_pipeline, models_dir / "gpr_cruise_model.joblib")
+        print(f"Saved cruise GPR model.")
 
 if __name__ == "__main__":
     main()

@@ -1,5 +1,5 @@
 # Scripts/02_quick_plots.py
-# Generates plots for both hover (eta vs. disk loading) and cruise (L/D vs. AoA) data.
+# Generates a performance summary with aligned x-axes for clear comparison.
 
 import os
 import pandas as pd
@@ -40,45 +40,57 @@ def main():
 
     # --- 3. Create Combined Figure with Two Subplots ---
     plt.style.use('seaborn-v0_8-whitegrid')
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 16))
-    fig.suptitle('Performance Summary', fontsize=18, y=0.99)
+    
+    # --- MODIFIED: Added sharex=True to align the x-axes ---
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 16), sharex=True)
+    fig.suptitle('Performance Summary of Initial Designs', fontsize=18, y=0.99)
 
-    # --- Plot 1: Hover Performance (Efficiency vs. Disk Loading) ---
+    # --- Plot 1: Hover Performance ---
     if not df_hover.empty:
-        print(f"Plotting hover performance for {df_hover['filename'].nunique()} unique propellers.")
-        sns.lineplot(data=df_hover, x='op_point', y='performance', hue='filename',
-                     marker='o', markersize=5, legend='full', ax=ax1)
+        print(f"Plotting hover performance for {len(df_hover)} data points.")
         
-        ax1.set_title('Hover Performance', fontsize=14)
-        ax1.set_xlabel('Disk Loading (T/A, N/m²)', fontsize=12)
+        scatter = sns.scatterplot(
+            data=df_hover, x='aoa_root (deg)', y='performance',
+            hue='op_speed', palette='viridis', alpha=0.7, s=50,
+            ax=ax1, legend=False
+        )
+        ax1.set_title('Hover Performance vs. Geometry and RPM', fontsize=14)
         ax1.set_ylabel('Hover Efficiency (η_hover)', fontsize=12)
+        ax1.grid(True, linestyle='--', alpha=0.6)
         
-        handles, labels = ax1.get_legend_handles_labels()
-        cleaned_labels = [os.path.splitext(os.path.basename(label))[0] for label in labels]
-        ax1.legend(handles, cleaned_labels, title='Lifting Surface', bbox_to_anchor=(1.05, 1), loc='upper left')
+        norm = plt.Normalize(df_hover['op_speed'].min(), df_hover['op_speed'].max())
+        sm = plt.cm.ScalarMappable(cmap="viridis", norm=norm)
+        sm.set_array([])
+        cbar = fig.colorbar(sm, ax=ax1)
+        cbar.set_label('RPM', rotation=270, labelpad=15, fontsize=12)
+        
+        min_rpm = df_hover['op_speed'].min()
+        median_rpm = df_hover['op_speed'].median()
+        max_rpm = df_hover['op_speed'].max()
+        cbar.set_ticks([min_rpm, median_rpm, max_rpm])
+        cbar.set_ticklabels([f'{min_rpm:.0f} (Min)', f'{median_rpm:.0f} (Median)', f'{max_rpm:.0f} (Max)'])
+        
     else:
         ax1.text(0.5, 0.5, "No Hover Data Found", ha='center', va='center', fontsize=14, alpha=0.5)
         ax1.set_title('Hover Performance', fontsize=14)
 
-
-    # --- Plot 2: Cruise Performance (L/D vs. Root AoA) ---
+    # --- Plot 2: Cruise Performance ---
     if not df_cruise.empty:
         print(f"Plotting cruise performance for {len(df_cruise)} COMSOL data points.")
-        # --- MODIFIED: Simplified scatter plot with no legend ---
-        sns.scatterplot(data=df_cruise, x='op_point', y='performance', 
-                        color='royalblue', alpha=0.7, s=50, ax=ax2)
-        
-        ax2.set_title('Cruise Performance (from COMSOL)', fontsize=14)
+        sns.scatterplot(
+            data=df_cruise, x='aoa_root (deg)', y='performance', 
+            alpha=0.6, s=50, ax=ax2, color='seagreen'
+        )
+        ax2.set_title('Cruise Performance vs. Operation', fontsize=14)
         ax2.set_xlabel('Root Angle of Attack (deg)', fontsize=12)
         ax2.set_ylabel('Lift-to-Drag Ratio (L/D)', fontsize=12)
-        ax2.grid(True, linestyle='--', alpha=0.6) # Add grid for better readability
+        ax2.grid(True, linestyle='--', alpha=0.6)
     else:
         ax2.text(0.5, 0.5, "No Cruise Data Found", ha='center', va='center', fontsize=14, alpha=0.5)
         ax2.set_title('Cruise Performance', fontsize=14)
 
     # --- 4. Customize and Save the Plot ---
-    plt.tight_layout(rect=[0, 0, 0.85, 0.98]) # Adjust layout to make room for hover legend
-
+    plt.tight_layout(rect=[0, 0, 1, 0.98])
     plots_dir = (script_dir / P["outputs_plots"]).resolve()
     plots_dir.mkdir(parents=True, exist_ok=True)
     
