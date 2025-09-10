@@ -28,7 +28,7 @@ def main():
 
     # --- 2. Identify and Isolate the New Validation Design ---
     # We now identify the validation design by its unique filename.
-    validation_filename = 'LS_052_01'
+    validation_filename = 'LS_052_01.csv'
     df_hover = df_full[df_full['flight_mode'] == 'hover']
     
     # The 'filename' column in the master dataset does not include the '.csv'
