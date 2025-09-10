@@ -25,12 +25,8 @@ paths:
 # =========================
 hover_process:
   # SNR thresholds for automatic data filtering
-  thrust_snr_threshold: 0.0
-  torque_snr_threshold: 0.0
-
-cruise_process:
-  airspeed_filter_ms: [18.0, 22.0] # Filters data to only include points within this speed range (m/s)
-  drag_moment_arm_m: 0.070
+  thrust_snr_threshold: 4.29
+  torque_snr_threshold: 4.29
 
 # =========================
 # FLUIDS
@@ -57,7 +53,6 @@ geometry_cols: ["AR", "lambda", "aoa_root (deg)", "twist (deg)"]
 # =========================
 optimization:
   w_hover: [0.0, 0.25, 0.5, 0.75, 1.0] # Weighting for hover in multi-objective optimization
-  n_op_points: 10  # Number of evenly spaced points to use for the AoA sweep
   # Kappa controls the exploration-exploitation trade-off.
   # Higher kappa = more exploration of uncertain regions.
-  kappa: 0.01
+  kappa: 2.0

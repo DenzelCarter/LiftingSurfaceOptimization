@@ -1,5 +1,5 @@
 # Scripts/02_quick_plots.py
-# Generates a performance summary with aligned x-axes for clear comparison.
+# Generates a comprehensive 2x2 performance summary plot for hover and cruise modes.
 
 import os
 import pandas as pd
@@ -38,59 +38,71 @@ def main():
     if df_hover.empty and df_cruise.empty:
         raise SystemExit("No hover or cruise data found in the master dataset to plot.")
 
-    # --- 3. Create Combined Figure with Two Subplots ---
+    # --- 3. Create a 2x2 Figure ---
     plt.style.use('seaborn-v0_8-whitegrid')
-    
-    # --- MODIFIED: Added sharex=True to align the x-axes ---
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 16), sharex=True)
-    fig.suptitle('Performance Summary of Initial Designs', fontsize=18, y=0.99)
+    fig, axes = plt.subplots(2, 2, figsize=(18, 14))
+    fig.suptitle('Performance Summary of Initial Designs', fontsize=20, y=0.98)
 
-    # --- Plot 1: Hover Performance ---
+    # --- Plot 1 (Top-Left): Hover Performance vs. Root AoA ---
+    ax = axes[0, 0]
     if not df_hover.empty:
-        print(f"Plotting hover performance for {len(df_hover)} data points.")
-        
-        scatter = sns.scatterplot(
-            data=df_hover, x='aoa_root (deg)', y='performance',
-            hue='op_speed', palette='viridis', alpha=0.7, s=50,
-            ax=ax1, legend=False
-        )
-        ax1.set_title('Hover Performance vs. Geometry and RPM', fontsize=14)
-        ax1.set_ylabel('Hover Efficiency (η_hover)', fontsize=12)
-        ax1.grid(True, linestyle='--', alpha=0.6)
+        scatter1 = sns.scatterplot(data=df_hover, x='aoa_root (deg)', y='performance', hue='op_speed',
+                                   palette='viridis', alpha=0.7, s=40, ax=ax, legend=False)
+        ax.set_title('Hover η vs. Root AoA (Colored by RPM)', fontsize=14)
+        ax.set_xlabel('Root Angle of Attack (deg)', fontsize=12)
+        ax.set_ylabel('Hover Efficiency (η_hover)', fontsize=12)
         
         norm = plt.Normalize(df_hover['op_speed'].min(), df_hover['op_speed'].max())
         sm = plt.cm.ScalarMappable(cmap="viridis", norm=norm)
         sm.set_array([])
-        cbar = fig.colorbar(sm, ax=ax1)
+        cbar = fig.colorbar(sm, ax=ax)
         cbar.set_label('RPM', rotation=270, labelpad=15, fontsize=12)
-        
-        min_rpm = df_hover['op_speed'].min()
-        median_rpm = df_hover['op_speed'].median()
-        max_rpm = df_hover['op_speed'].max()
-        cbar.set_ticks([min_rpm, median_rpm, max_rpm])
-        cbar.set_ticklabels([f'{min_rpm:.0f} (Min)', f'{median_rpm:.0f} (Median)', f'{max_rpm:.0f} (Max)'])
-        
+        min_rpm, med_rpm, max_rpm = df_hover['op_speed'].min(), df_hover['op_speed'].median(), df_hover['op_speed'].max()
+        cbar.set_ticks([min_rpm, med_rpm, max_rpm])
+        cbar.set_ticklabels([f'{min_rpm:.0f}', f'{med_rpm:.0f}', f'{max_rpm:.0f}'])
     else:
-        ax1.text(0.5, 0.5, "No Hover Data Found", ha='center', va='center', fontsize=14, alpha=0.5)
-        ax1.set_title('Hover Performance', fontsize=14)
+        ax.text(0.5, 0.5, "No Hover Data", ha='center', va='center')
 
-    # --- Plot 2: Cruise Performance ---
-    if not df_cruise.empty:
-        print(f"Plotting cruise performance for {len(df_cruise)} COMSOL data points.")
-        sns.scatterplot(
-            data=df_cruise, x='aoa_root (deg)', y='performance', 
-            alpha=0.6, s=50, ax=ax2, color='seagreen'
-        )
-        ax2.set_title('Cruise Performance vs. Operation', fontsize=14)
-        ax2.set_xlabel('Root Angle of Attack (deg)', fontsize=12)
-        ax2.set_ylabel('Lift-to-Drag Ratio (L/D)', fontsize=12)
-        ax2.grid(True, linestyle='--', alpha=0.6)
+    # --- Plot 2 (Top-Right): Hover Performance vs. RPM ---
+    ax = axes[0, 1]
+    if not df_hover.empty:
+        sns.lineplot(data=df_hover, x='op_speed', y='performance', hue='filename',
+                     marker='o', markersize=4, style='filename', ax=ax, legend=True)
+        ax.set_title('Hover η vs. RPM (Grouped by LS Design)', fontsize=14)
+        ax.set_xlabel('Operational Speed (RPM)', fontsize=12)
+        ax.set_ylabel('Hover Efficiency (η_hover)', fontsize=12)
+        ax.legend(title='Lifting Surface', bbox_to_anchor=(1.05, 1), loc='upper left')
     else:
-        ax2.text(0.5, 0.5, "No Cruise Data Found", ha='center', va='center', fontsize=14, alpha=0.5)
-        ax2.set_title('Cruise Performance', fontsize=14)
+        ax.text(0.5, 0.5, "No Hover Data", ha='center', va='center')
+
+    # --- Plot 3 (Bottom-Left): Cruise Performance vs. Root AoA ---
+    ax = axes[1, 0]
+    if not df_cruise.empty:
+        sns.scatterplot(data=df_cruise, x='aoa_root (deg)', y='performance', 
+                        alpha=0.6, s=40, ax=ax, color='seagreen')
+        ax.set_title('Cruise L/D vs. Root AoA', fontsize=14)
+        ax.set_xlabel('Root Angle of Attack (deg)', fontsize=12)
+        ax.set_ylabel('Lift-to-Drag Ratio (L/D)', fontsize=12)
+    else:
+        ax.text(0.5, 0.5, "No Cruise Data", ha='center', va='center')
+
+    # --- Plot 4 (Bottom-Right): Cruise Performance vs. Cruise Speed ---
+    ax = axes[1, 1]
+    if not df_cruise.empty:
+        sns.scatterplot(data=df_cruise, x='op_speed', y='performance', 
+                        alpha=0.6, s=40, ax=ax, color='darkorange')
+        ax.set_title('Cruise L/D vs. Cruise Speed', fontsize=14)
+        ax.set_xlabel('Operational Speed (m/s)', fontsize=12)
+        ax.set_ylabel('Lift-to-Drag Ratio (L/D)', fontsize=12)
+    else:
+        ax.text(0.5, 0.5, "No Cruise Data", ha='center', va='center')
 
     # --- 4. Customize and Save the Plot ---
-    plt.tight_layout(rect=[0, 0, 1, 0.98])
+    for ax in axes.flatten():
+        ax.grid(True, linestyle='--', alpha=0.6)
+        
+    plt.tight_layout(rect=[0, 0, 0.9, 0.97]) # Adjust layout for legend
+
     plots_dir = (script_dir / P["outputs_plots"]).resolve()
     plots_dir.mkdir(parents=True, exist_ok=True)
     
@@ -98,7 +110,7 @@ def main():
     fig.savefig(plot_path)
     plt.close(fig)
 
-    print(f"\nSuccessfully generated performance summary plot.")
+    print(f"\nSuccessfully generated comprehensive performance summary plot.")
     print(f"Output saved to: '{plot_path}'")
 
 if __name__ == "__main__":
