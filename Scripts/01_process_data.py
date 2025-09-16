@@ -1,179 +1,502 @@
-# Scripts/01_process_data.py
-# Processes data and filters it to a common design space defined by the bounds
-# of the hover experiments to preserve all experimental data.
+# 01_process_data.py
+# Ingest hover/cruise data, compute robust per-step hover stats, and build master parquet.
+# Hover:
+#   - Per (k_id, esc_signal) step, dynamic estimators for T/Q/RPM/IMU; pairs bootstrap for eta variance.
+#   - Drop entire first step per k where esc_signal==1000 (artifact).
+#   - Keep ONLY hover k_id present in DOE (golden sample excluded).
+# Cruise:
+#   - Read comsol_cruise_01.txt; performance = comp1.L / comp1.D.
+#   - Assign cruise k_id by grouping unique geometry (AR, lambda, twist) → same k across alpha sweep.
+# Outputs:
+#   - paths.master_parquet
+#   - paths.outputs_tables/01_hover_step_diagnostics.csv
 
 import os
-import glob
 import re
 import warnings
-import yaml
+from pathlib import Path
+from typing import Dict, Tuple, List
+
 import numpy as np
 import pandas as pd
-from pathlib import Path
-from scipy.interpolate import interp1d
+from scipy.stats import trim_mean, skew, kurtosis
 
-# --- Global Constants & Config ---
-TARE_PATTERN = re.compile(r"^(tare|mount|baseline)\b", re.IGNORECASE)
+import path_utils
 
-def load_config() -> dict:
-    """Loads config.yaml from the same directory as the script."""
-    try:
-        script_dir = Path(__file__).parent
-        config_path = script_dir / "config.yaml"
-        with open(config_path, "r") as f:
-            return yaml.safe_load(f)
-    except FileNotFoundError:
-        raise SystemExit(f"Configuration file not found. Ensure 'config.yaml' is in the same folder as this script.")
+def _as_list(x):
+    if x is None: return []
+    if isinstance(x, (list, tuple)): return list(x)
+    return [x]
 
-# --- Helper Functions (unchanged) ---
-def _find_col(df: pd.DataFrame, preferred_names: list, fallbacks: list = None) -> str | None:
-    fallbacks = fallbacks or []
-    df_columns_lower = {col.lower().strip(): col for col in df.columns}
-    for name in preferred_names + fallbacks:
-        if name.lower().strip() in df_columns_lower:
-            return df_columns_lower[name.lower().strip()]
+def find_col(df: pd.DataFrame, candidates) -> str | None:
+    candidates = _as_list(candidates)
+    canon = {re.sub(r'\s+', ' ', c.strip().lower()): c for c in df.columns}
+    for name in candidates:
+        key = re.sub(r'\s+', ' ', str(name).strip().lower())
+        if key in canon:
+            return canon[key]
+    for key, orig in canon.items():
+        for name in candidates:
+            cand = re.sub(r'\s+', ' ', str(name).strip().lower())
+            if cand and cand in key:
+                return orig
     return None
 
-def _create_tare_interpolator(tare_dir: str):
-    if not os.path.isdir(tare_dir):
-        warnings.warn(f"Tare directory not found at '{tare_dir}'. No tare correction will be applied.")
-        return lambda rpm: np.zeros_like(rpm), lambda rpm: np.zeros_like(rpm)
-    tare_files = glob.glob(os.path.join(tare_dir, "*.csv"))
-    if not tare_files:
-        warnings.warn("No raw tare files found. No tare correction will be applied.")
-        return lambda rpm: np.zeros_like(rpm), lambda rpm: np.zeros_like(rpm)
-    tare_dfs = [pd.read_csv(f, low_memory=False) for f in tare_files]
-    df_raw_tare = pd.concat(tare_dfs, ignore_index=True)
-    rpm_col = _find_col(df_raw_tare, ["Motor Electrical Speed (RPM)"], ["rpm", "RPM"])
-    thrust_col = _find_col(df_raw_tare, ["Thrust (N)"])
-    torque_col = _find_col(df_raw_tare, ["Torque (N·m)"])
-    if not all([rpm_col, thrust_col, torque_col]):
-        warnings.warn("Tare files are missing required columns. No tare correction applied.")
-        return lambda rpm: np.zeros_like(rpm), lambda rpm: np.zeros_like(rpm)
-    df_clean_tare = pd.DataFrame({
-        'rpm': pd.to_numeric(df_raw_tare[rpm_col], errors="coerce"),
-        'thrust': pd.to_numeric(df_raw_tare[thrust_col], errors="coerce"),
-        'torque': pd.to_numeric(df_raw_tare[torque_col], errors="coerce")
-    }).dropna().sort_values('rpm').drop_duplicates(subset=['rpm'])
-    if len(df_clean_tare) < 2:
-        warnings.warn("Insufficient valid data in tare files for interpolation. No correction applied.")
-        return lambda rpm: np.zeros_like(rpm), lambda rpm: np.zeros_like(rpm)
-    thrust_fn = interp1d(df_clean_tare["rpm"], df_clean_tare["thrust"], kind='linear', bounds_error=False, fill_value=0)
-    torque_fn = interp1d(df_clean_tare["rpm"], df_clean_tare["torque"], kind='linear', bounds_error=False, fill_value=0)
-    print("Successfully created tare interpolator.")
-    return thrust_fn, torque_fn
+def safe_std(x: np.ndarray) -> float:
+    x = np.asarray(x, float)
+    x = x[np.isfinite(x)]
+    n = x.size
+    if n >= 2: return float(np.std(x, ddof=1))
+    if n == 1: return 0.0
+    return np.nan
+
+def load_config() -> Dict:
+    cfg = path_utils.load_cfg()
+    P = cfg.get("paths", {})
+    F = cfg.get("fluids", {})
+    G = cfg.get("geometry", {})
+
+    paths = {
+        "hover_raw":      P.get("dir_hover_raw"),
+        "hover_tare":     P.get("dir_hover_tare"),
+        "cruise_comsol":  P.get("dir_cruise_comsol"),
+        "processed_dir":  P.get("dir_processed"),
+        "master_parquet": P.get("master_parquet"),
+        "doe_csv":        P.get("doe_csv"),
+        "outputs_tables": P.get("outputs_tables") or P.get("dir_processed"),
+    }
+
+    rho_default = 1.204
+    nu_default  = 1.51e-5
+    rho = float(F.get("rho", rho_default)) if F is not None else rho_default
+    nu  = float(F.get("nu", nu_default)) if F is not None else nu_default
+    mu  = float(F.get("mu", rho*nu)) if F is not None else rho*nu
+
+    r_hub   = float(G.get("r_hub_m", 0.046))
+    l_blade = float(G.get("l_blade_m", 0.184))
+    r_tip   = float(G.get("r_tip_m", r_hub + l_blade))
+
+    disk_A = float(np.pi * r_tip**2)  # full disk
+
+    input_cols = cfg.get("input_cols", ["AR","lambda","twist","alpha","v"])
+
+    return {
+        "cfg": cfg,
+        "paths": paths,
+        "rho": rho, "mu": mu, "nu": nu,
+        "r_hub": r_hub, "l_blade": l_blade, "r_tip": r_tip,
+        "disk_A": disk_A,
+        "input_cols": input_cols
+    }
+
+RAW_NAME_HINTS = {
+    "esc": ["ESC signal (µs)", "ESC signal (us)", "esc", "esc_signal", "esc signal"],
+    "rpm": ["Motor Electrical Speed (RPM)", "RPM", "rpm"],
+    "T":   ["Thrust (N)", "thrust", "T (N)", "T"],
+    "Q":   ["Torque (N·m)", "Torque (Nm)", "torque", "Q (N*m)", "Q (N·m)", "Q"],
+    "k_id":["k_id", "filename", "file", "design_id"],
+    "vib":["Vibration (g)","vibration (g)","vibration","imu (g)","imu_g","accel_g","accelerometer (g)"]
+}
+
+def read_hover_csv(path: Path) -> pd.DataFrame:
+    df = pd.read_csv(path, low_memory=False)
+
+    esc_col = find_col(df, RAW_NAME_HINTS["esc"])
+    rpm_col = find_col(df, RAW_NAME_HINTS["rpm"])
+    T_col   = find_col(df, RAW_NAME_HINTS["T"])
+    Q_col   = find_col(df, RAW_NAME_HINTS["Q"])
+    if not all([esc_col, rpm_col, T_col, Q_col]):
+        raise ValueError(f"{path.name}: missing required columns (esc/rpm/T/Q)")
+
+    out = pd.DataFrame({
+        "esc_signal": df[esc_col].astype(float),
+        "rpm": df[rpm_col].astype(float),
+        "T": df[T_col].astype(float),
+        "Q": df[Q_col].astype(float),
+    })
+    vib_col = find_col(df, RAW_NAME_HINTS["vib"])
+    if vib_col:
+        out["vibration_g"] = df[vib_col].astype(float)
+
+    kid_col = find_col(df, RAW_NAME_HINTS["k_id"])
+    if kid_col:
+        out["k_id"] = df[kid_col].astype(str)
+    else:
+        m = re.search(r"(LS_\d{3}_\d{2})", path.stem)
+        out["k_id"] = m.group(1) if m else path.stem
+
+    out["source_file"] = path.name
+    return out
+
+def load_hover_raw(dir_hover_raw: str) -> pd.DataFrame:
+    if not dir_hover_raw or not os.path.isdir(dir_hover_raw):
+        warnings.warn(f"Hover raw directory not found: {dir_hover_raw}")
+        return pd.DataFrame()
+    files = sorted([p for p in Path(dir_hover_raw).glob("*.csv") if not p.name.lower().startswith("tare")])
+    if not files:
+        warnings.warn(f"No hover CSVs found in {dir_hover_raw}")
+        return pd.DataFrame()
+    dfs = []
+    for p in files:
+        try:
+            dfs.append(read_hover_csv(p))
+        except Exception as e:
+            warnings.warn(f"Skipping {p.name}: {e}")
+    return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
+
+def load_tare_interps(dir_hover_tare: str):
+    if not dir_hover_tare:
+        return None
+    candidates = ["Tare_01.csv", "No_Load_Rotate_01.csv", "tare.csv"]
+    tare_file = None
+    for name in candidates:
+        p = Path(dir_hover_tare) / name
+        if p.exists():
+            tare_file = p; break
+    if tare_file is None:
+        warnings.warn("No tare file found; proceeding without tare correction.")
+        return None
+
+    df = pd.read_csv(tare_file, low_memory=False)
+    rpm_col = find_col(df, RAW_NAME_HINTS["rpm"])
+    T_col   = find_col(df, RAW_NAME_HINTS["T"])
+    Q_col   = find_col(df, RAW_NAME_HINTS["Q"])
+    if not all([rpm_col, T_col, Q_col]):
+        warnings.warn(f"{tare_file.name} missing required columns; skipping tare correction.")
+        return None
+
+    grp = df.groupby(df[rpm_col].round(0)).agg({
+        rpm_col:"mean", T_col:["mean","std"], Q_col:["mean","std"]
+    })
+    grp.columns = ["rpm_mean","T_mean","T_std","Q_mean","Q_std"]
+    grp = grp.sort_values("rpm_mean").reset_index(drop=True)
+
+    x = grp["rpm_mean"].to_numpy()
+    def interp(col):
+        yv = grp[col].to_numpy()
+        return lambda r: np.interp(r, x, yv, left=yv[0], right=yv[-1])
+
+    return {
+        "T_mean": interp("T_mean"),
+        "T_std":  interp("T_std"),
+        "Q_mean": interp("Q_mean"),
+        "Q_std":  interp("Q_std"),
+    }
+
+def estimator_select(x: np.ndarray) -> Tuple[str, float, float]:
+    """
+    Choose a robust location estimator for 1D samples x.
+    Returns: (method, skewness g1, excess kurtosis g2)
+      method ∈ {"mean","trim10","trim20","median"}
+
+    Rules:
+      - Prefer mean only when skew is tiny and tails are near-normal or flat (g2 ≤ ~0.5).
+      - Trim earlier for leptokurtic (g2>0) than platykurtic (g2<0).
+      - Escalate based on robust outlier fraction p_out from a 3*MAD threshold.
+      - Small-n guard biases toward light/medium trimming unless outliers are heavy.
+    """
+    x = np.asarray(x, float)
+    x = x[np.isfinite(x)]
+    n = x.size
+    if n == 0:
+        return "trim10", np.nan, np.nan  # neutral default on empty
+
+    # Sample skew/kurtosis (excess kurtosis: 0 for normal)
+    g1 = skew(x, bias=False) if n >= 3 else 0.0
+    g2 = kurtosis(x, fisher=True, bias=False) if n >= 4 else 0.0
+
+    # Robust outlier rate via MAD (fallback to IQR if MAD=0)
+    med = np.median(x)
+    mad = np.median(np.abs(x - med))
+    madn = 1.4826 * mad
+    if madn > 0:
+        p_out = float(np.mean(np.abs(x - med) > 3.0 * madn))
+    else:
+        q1, q3 = np.percentile(x, [25, 75])
+        iqr = q3 - q1
+        if iqr > 0:
+            p_out = float(np.mean((x < q1 - 3.0*iqr) | (x > q3 + 3.0*iqr)))
+        else:
+            p_out = 0.0
+
+    # Initial choice from skew/kurtosis (asymmetric: heavier penalty for g2>0)
+    if not np.isfinite(g1) or not np.isfinite(g2):
+        m = "trim10"
+    else:
+        if (abs(g1) <= 0.3) and (-0.8 <= g2 <= 0.5):
+            m = "mean"          # near-normal or flat tails, tiny skew
+        elif (abs(g1) <= 0.9) and (g2 <= 1.5):
+            m = "trim10"        # mild skew OR mild leptokurtic
+        elif (abs(g1) <= 1.5) and (g2 <= 3.5):
+            m = "trim20"        # moderate skew/tails
+        else:
+            m = "median"        # very heavy tails or strong asymmetry
+
+        # Be forgiving for clearly platykurtic with tiny skew and few outliers
+        if (g2 < -0.8) and (abs(g1) <= 0.5) and (p_out < 0.03):
+            m = "mean"
+
+    # Small-sample guard (avoid overreacting to noisy g1/g2)
+    if n < 6:
+        if p_out >= 0.15:
+            m = "median"
+        elif p_out >= 0.05:
+            m = "trim20"
+        else:
+            m = "trim10"
+        return m, float(g1), float(g2)
+
+    # Escalate robustness based on outlier fraction
+    if p_out >= 0.20:
+        m = "median"
+    elif p_out >= 0.08:
+        if m == "mean":
+            m = "trim10"
+        elif m == "trim10":
+            m = "trim20"
+    elif p_out >= 0.03:
+        if m == "mean":
+            m = "trim10"
+
+    return m, float(g1), float(g2)
+
+def estimator_apply(x: np.ndarray, method: str) -> float:
+    x = np.asarray(x, float)
+    x = x[np.isfinite(x)]
+    if x.size == 0: return np.nan
+    if method == "mean":   return float(np.mean(x))
+    if method == "trim10": return float(trim_mean(x, 0.10))
+    if method == "trim20": return float(trim_mean(x, 0.20))
+    if method == "median": return float(np.median(x))
+    raise ValueError(f"unknown method {method}")
+
+def bootstrap_loc_var(x: np.ndarray, method: str, B: int = 1000, rng=None):
+    x = np.asarray(x, float)
+    x = x[np.isfinite(x)]
+    n = x.size
+    if n < 3: return np.nan, np.nan
+    rng = rng or np.random.default_rng()
+    est = np.empty(B, float)
+    for b in range(B):
+        idx = rng.integers(0, n, size=n)
+        est[b] = estimator_apply(x[idx], method)
+    var = float(np.var(est, ddof=1))
+    se  = float(np.sqrt(var))
+    return var, se
+
+def eta_ratio_of_means(T: np.ndarray, Q: np.ndarray, rpm: np.ndarray,
+                       rho: float, disk_A: float,
+                       mN: str, mD: str) -> float:
+    w = rpm * (2.0*np.pi/60.0)  # rad/s
+    N = np.sqrt(np.clip(T, 0.0, None)**3 / (2.0 * rho * disk_A))
+    D = Q * w
+    Nbar = estimator_apply(N, mN)
+    Dbar = estimator_apply(D, mD)
+    if not np.isfinite(Nbar) or not np.isfinite(Dbar) or Dbar <= 0:
+        return np.nan
+    return float(Nbar / Dbar)
+
+def bootstrap_eta_pairs(T: np.ndarray, Q: np.ndarray, rpm: np.ndarray,
+                        rho: float, disk_A: float,
+                        mN: str, mD: str,
+                        B: int = 1000, rng=None):
+    T = np.asarray(T, float); Q = np.asarray(Q, float); rpm = np.asarray(rpm, float)
+    mask = np.isfinite(T) & np.isfinite(Q) & np.isfinite(rpm)
+    T, Q, rpm = T[mask], Q[mask], rpm[mask]
+    n = T.size
+    if n < 5: return np.nan, np.nan, np.nan
+    rng = rng or np.random.default_rng()
+    point = eta_ratio_of_means(T, Q, rpm, rho, disk_A, mN, mD)
+    if not np.isfinite(point): return np.nan, np.nan, np.nan
+    boot = np.empty(B, float)
+    for b in range(B):
+        idx = rng.integers(0, n, size=n)
+        boot[b] = eta_ratio_of_means(T[idx], Q[idx], rpm[idx], rho, disk_A, mN, mD)
+    var = float(np.var(boot, ddof=1))
+    se  = float(np.sqrt(var))
+    return point, var, se
+
+def process_hover(df_hover: pd.DataFrame, cfgd: Dict):
+    if df_hover.empty:
+        return pd.DataFrame(), pd.DataFrame()
+    rho = cfgd["rho"]; disk_A = cfgd["disk_A"]; r_tip = cfgd["r_tip"]
+
+    tare = load_tare_interps(cfgd["paths"]["hover_tare"])
+
+    groups = df_hover.groupby(["k_id","esc_signal"], sort=False)
+    diag_rows = []
+    master_rows = []
+
+    for (k_id, esc), g in groups:
+        # Skip the entire first step per k (artifact: esc_signal == 1000)
+        try:
+            if float(esc) == 1000.0:
+                continue
+        except Exception:
+            pass
+
+        T   = g["T"].to_numpy(float)
+        Q   = g["Q"].to_numpy(float)
+        rpm = g["rpm"].to_numpy(float)
+        vib = g["vibration_g"].to_numpy(float) if "vibration_g" in g.columns else np.full(len(g), np.nan)
+
+        if tare:
+            T = T - tare["T_mean"](rpm)
+            Q = Q - tare["Q_mean"](rpm)
+
+        mT, skT, kuT = estimator_select(T)
+        mQ, skQ, kuQ = estimator_select(Q)
+        mR, skR, kuR = estimator_select(rpm)
+        mV, skV, kuV = estimator_select(vib)
+
+        T_loc = estimator_apply(T, mT); T_std_raw = safe_std(T)
+        Q_loc = estimator_apply(Q, mQ); Q_std_raw = safe_std(Q)
+        R_loc = estimator_apply(rpm, mR); R_std_raw = safe_std(rpm)
+        V_loc = estimator_apply(vib, mV); V_std_raw = safe_std(vib)
+
+        T_var_b, T_se_b = bootstrap_loc_var(T, mT, B=1000)
+        Q_var_b, Q_se_b = bootstrap_loc_var(Q, mQ, B=1000)
+        R_var_b, R_se_b = bootstrap_loc_var(rpm, mR, B=1000)
+        V_var_b, V_se_b = bootstrap_loc_var(vib, mV, B=1000) if np.isfinite(vib).any() else (np.nan, np.nan)
+
+        w = rpm * (2.0*np.pi/60.0)
+        N = np.sqrt(np.clip(T,0.0,None)**3 / (2.0 * rho * disk_A))
+        D = Q * w
+        mN, skN, kuN = estimator_select(N)
+        mD, skD, kuD = estimator_select(D)
+
+        eta_point, eta_var, eta_se = bootstrap_eta_pairs(T, Q, rpm, rho, disk_A, mN, mD, B=1000)
+
+        omega_loc = R_loc * (2.0*np.pi/60.0)
+        v_tip = omega_loc * r_tip
+
+        neg_T_frac = float(np.mean(T < 0)) if len(T) else np.nan
+
+        master_rows.append({
+            "flight_mode":"hover",
+            "k_id": k_id,
+            "esc_signal": esc,
+            "v": v_tip,
+            "rpm": R_loc,
+            "performance": eta_point,
+            "performance_variance": eta_var
+        })
+
+        diag_rows.append({
+            "k_id": k_id, "esc_signal": esc, "n_reps": int(len(g)),
+            "T_method": mT, "T_loc": T_loc, "T_std_raw": T_std_raw, "T_skew": skT, "T_kurt": kuT, "T_var_boot": T_var_b, "T_se_boot": T_se_b,
+            "Q_method": mQ, "Q_loc": Q_loc, "Q_std_raw": Q_std_raw, "Q_skew": skQ, "Q_kurt": kuQ, "Q_var_boot": Q_var_b, "Q_se_boot": Q_se_b,
+            "RPM_method": mR, "RPM_loc": R_loc, "RPM_std_raw": R_std_raw, "RPM_skew": skR, "RPM_kurt": kuR, "RPM_var_boot": R_var_b, "RPM_se_boot": R_se_b,
+            "VIB_method": mV, "VIB_loc": V_loc, "VIB_std_raw": V_std_raw, "VIB_skew": skV, "VIB_kurt": kuV, "VIB_var_boot": V_var_b, "VIB_se_boot": V_se_b,
+            "N_method": mN, "N_skew": skN, "N_kurt": kuN, "D_method": mD, "D_skew": skD, "D_kurt": kuD,
+            "eta_point": eta_point, "eta_var_boot": eta_var, "eta_se_boot": eta_se,
+            "v": v_tip, "neg_T_frac": neg_T_frac
+        })
+
+    return pd.DataFrame(master_rows), pd.DataFrame(diag_rows)
+
+def load_doe(doe_csv: str) -> pd.DataFrame:
+    if not doe_csv or not os.path.exists(doe_csv):
+        warnings.warn(f"DOE CSV not found: {doe_csv}")
+        return pd.DataFrame()
+    df = pd.read_csv(doe_csv)
+    if "material" in df.columns:
+        df = df.drop(columns=["material"])
+    return df
+
+def join_geometry(df_master: pd.DataFrame, df_doe: pd.DataFrame) -> pd.DataFrame:
+    if df_master.empty or df_doe.empty:
+        return df_master
+    use_cols = ["k_id","AR","lambda","twist","alpha"]
+    missing = [c for c in use_cols if c not in df_doe.columns]
+    if missing:
+        warnings.warn(f"DOE missing columns: {missing}.")
+        use_cols = [c for c in use_cols if c in df_doe.columns]
+    merged = df_master.merge(df_doe[use_cols].drop_duplicates("k_id"), on="k_id", how="left")
+    return merged
+
+def load_cruise_comsol(dir_cruise_comsol: str) -> pd.DataFrame:
+    if not dir_cruise_comsol or not os.path.isdir(dir_cruise_comsol):
+        warnings.warn(f"Cruise COMSOL dir not found: {dir_cruise_comsol}")
+        return pd.DataFrame()
+    candidate = Path(dir_cruise_comsol) / "comsol_cruise_01.txt"
+    if not candidate.exists():
+        warnings.warn(f"{candidate.name} not found; skipping cruise.")
+        return pd.DataFrame()
+
+    names = ["AR","lambda","twist (deg)","aoa_root (deg)","U_cruise (m/s)","comp1.L","comp1.D"]
+    df = pd.read_csv(candidate, sep=r"\s+", engine="python", comment="%", header=None, names=names)
+
+    df = df.rename(columns={
+        "twist (deg)":"twist",
+        "aoa_root (deg)":"alpha",
+        "U_cruise (m/s)":"v"
+    })
+
+    if "comp1.L" in df.columns and "comp1.D" in df.columns:
+        df["performance"] = (df["comp1.L"].astype(float) / df["comp1.D"].astype(float)).replace([np.inf,-np.inf], np.nan)
+    else:
+        df["performance"] = np.nan
+
+    df["performance_variance"] = 1e-6 * float(np.nanmax([1.0, df["performance"].abs().max(skipna=True)]))
+    df["flight_mode"] = "cruise"
+    df["esc_signal"] = np.nan
+    df["rpm"] = np.nan
+
+    keep = ["flight_mode","AR","lambda","twist","alpha","v","performance","performance_variance","esc_signal","rpm"]
+    for c in keep:
+        if c not in df.columns: df[c] = np.nan
+    df = df[keep]
+
+    # Assign cruise k_id by grouping identical geometry (AR, lambda, twist)
+    # Round to mitigate floating noise before grouping
+    gkeys = (df["AR"].round(6), df["lambda"].round(6), df["twist"].round(6))
+    geom_code, uniques = pd.factorize(pd.Series(list(zip(*gkeys))))
+    df["k_id"] = [f"CR_{i:03d}" for i in geom_code]
+
+    return df[["flight_mode","k_id","esc_signal","rpm","AR","lambda","twist","alpha","v","performance","performance_variance"]]
 
 def main():
-    C = load_config()
-    P = C["paths"]
-    GEO_COLS = C["geometry_cols"]
-    HOVER_CFG = C.get("hover_process", {})
-    script_dir = Path(__file__).parent
+    cfgd = load_config()
+    P = cfgd["paths"]
 
-    # --- 1. Load DOE, Constants, and Tare Interpolator ---
-    doe_csv_path = (script_dir / P["doe_csv"]).resolve()
-    try: doe_df = pd.read_csv(doe_csv_path)
-    except FileNotFoundError: raise SystemExit(f"Error: DOE file not found at '{doe_csv_path}'.")
-    rho = C["fluids"]["rho"]
-    r_tip = C["geometry"]["r_hub_m"] + C["geometry"]["span_blade_m"]
-    disk_A = np.pi * r_tip**2
-    tare_dir = (script_dir / P["data_hover_tare"]).resolve()
-    thrust_tare_fn, torque_tare_fn = _create_tare_interpolator(str(tare_dir))
-    all_hover_rows, all_cruise_rows = [], []
+    Path(P["processed_dir"]).mkdir(parents=True, exist_ok=True)
+    Path(P["outputs_tables"]).mkdir(parents=True, exist_ok=True)
 
-    # --- 2. Process HOVER Data (unchanged) ---
-    print("\n--- Processing Hover Data ---")
-    data_hover_dir = (script_dir / P["data_hover_raw"]).resolve()
-    hover_files = glob.glob(os.path.join(data_hover_dir, "*.csv"))
-    if hover_files:
-        for fpath in hover_files:
-            basename = os.path.basename(fpath)
-            if TARE_PATTERN.search(basename): continue
-            try:
-                df_raw = pd.read_csv(fpath, low_memory=False)
-                esc_col, rpm_col = _find_col(df_raw, ["ESC signal (µs)"]), _find_col(df_raw, ["Motor Electrical Speed (RPM)"], ["rpm"])
-                thrust_col, torque_col = _find_col(df_raw, ["Thrust (N)"]), _find_col(df_raw, ["Torque (N·m)"])
-                if not all([esc_col, rpm_col, thrust_col, torque_col]): continue
-                df_proc = pd.DataFrame()
-                df_proc['esc_signal_us'] = pd.to_numeric(df_raw[esc_col], errors="coerce")
-                df_proc['rpm'] = pd.to_numeric(df_raw[rpm_col], errors="coerce")
-                df_proc['thrust_raw'] = pd.to_numeric(df_raw[thrust_col], errors="coerce")
-                df_proc['torque_raw'] = pd.to_numeric(df_raw[torque_col], errors="coerce")
-                df_proc.dropna(inplace=True); df_proc = df_proc[df_proc['esc_signal_us'] != 1000]
-                if df_proc.empty: continue
-                df_proc['thrust'] = df_proc['thrust_raw'] - thrust_tare_fn(df_proc['rpm'])
-                df_proc['torque'] = df_proc['torque_raw'] - torque_tare_fn(df_proc['rpm'])
-                df_proc['mech_power'] = df_proc['torque'] * (2 * np.pi * df_proc['rpm'] / 60.0)
-                grouped = df_proc.groupby('esc_signal_us')
-                for _, group in grouped:
-                    if group.empty: continue
-                    T_avg, T_std = group['thrust'].mean(), group['thrust'].std()
-                    Torque_avg, Torque_std = group['torque'].mean(), group['torque'].std()
-                    thrust_snr = np.abs(T_avg) / T_std if T_std > 1e-9 else np.inf
-                    torque_snr = np.abs(Torque_avg) / Torque_std if Torque_std > 1e-9 else np.inf
-                    if thrust_snr < HOVER_CFG.get("thrust_snr_threshold", 20) or torque_snr < HOVER_CFG.get("torque_snr_threshold", 20): continue
-                    P_avg = group['mech_power'].mean()
-                    Pi_avg = np.sqrt(np.maximum(T_avg, 0.0)**3 / (2.0 * rho * disk_A))
-                    efficiency = np.clip(Pi_avg / P_avg if P_avg > 1e-9 else 0.0, 0.0, 1.0)
-                    all_hover_rows.append({"filename": basename, "flight_mode": "hover", "op_speed": group['rpm'].mean(), "performance": efficiency})
-            except Exception as e:
-                print(f"Error processing hover file {basename}: {e}")
+    df_doe = load_doe(P["doe_csv"])
+    df_hover_raw = load_hover_raw(P["hover_raw"])
+    if not df_doe.empty and not df_hover_raw.empty and "k_id" in df_hover_raw.columns and "k_id" in df_doe.columns:
+        allowed = set(df_doe["k_id"].astype(str).unique())
+        df_hover_raw = df_hover_raw[df_hover_raw["k_id"].astype(str).isin(allowed)]
 
-    # --- 3. Process CRUISE Data (unchanged) ---
-    print("\n--- Processing Cruise Data from COMSOL ---")
-    data_cruise_dir = (script_dir / P["data_cruise_comsol"]).resolve()
-    cruise_files = glob.glob(os.path.join(data_cruise_dir, "*.txt"))
-    if cruise_files:
-        for fpath in cruise_files:
-            basename = os.path.basename(fpath)
-            try:
-                with open(fpath, 'r') as f: lines = f.readlines()
-                header_line_index = next((i for i, line in enumerate(lines) if line.strip().startswith('% AR')), None)
-                if header_line_index is None: continue
-                col_names = ['AR', 'lambda', 'twist (deg)', 'aoa_root (deg)', 'U_cruise (m/s)', 'L', 'D']
-                df_comsol = pd.read_csv(fpath, sep='\s+', header=None, names=col_names, skiprows=header_line_index + 1)
-                with np.errstate(divide='ignore', invalid='ignore'):
-                    ld_ratio = (df_comsol['L'] / df_comsol['D']).replace([np.inf, -np.inf], 0).fillna(0)
-                for index, row in df_comsol.iterrows():
-                    all_cruise_rows.append({
-                        "flight_mode": "cruise", "op_speed": row["U_cruise (m/s)"], "performance": ld_ratio.iloc[index],
-                        "AR": row["AR"], "lambda": row["lambda"], "aoa_root (deg)": row["aoa_root (deg)"],
-                        "twist (deg)": row["twist (deg)"]
-                    })
-            except Exception as e:
-                print(f"Error processing COMSOL file {basename}: {e}")
+    df_hover_master, df_hover_diag = process_hover(df_hover_raw, cfgd)
+    df_hover_master = join_geometry(df_hover_master, df_doe)
 
-    # --- 4. Assemble and Filter to Common Design Space ---
-    if not all_hover_rows or not all_cruise_rows:
-        raise SystemExit("\nError: Data from both hover and cruise modes is required for filtering.")
+    frames = []
+    if not df_hover_master.empty:
+        needed = ["flight_mode","k_id","esc_signal","rpm","AR","lambda","twist","alpha","v","performance","performance_variance"]
+        for c in needed:
+            if c not in df_hover_master.columns:
+                df_hover_master[c] = np.nan
+        frames.append(df_hover_master[needed])
 
-    df_hover = pd.merge(pd.DataFrame(all_hover_rows), doe_df, on="filename", how="inner")
-    df_cruise = pd.DataFrame(all_cruise_rows)
+    df_cruise = load_cruise_comsol(P["cruise_comsol"])
+    if not df_cruise.empty:
+        frames.append(df_cruise)
 
-    # --- MODIFIED: Use Hover Data as the Source of Truth for Bounds ---
-    fixed_geometric_params = ['AR', 'lambda', 'twist (deg)']
-    print("\n--- Filtering design space based on HOVER experiment bounds ---")
-    
-    hover_bounds = {col: (df_hover[col].min(), df_hover[col].max()) for col in fixed_geometric_params}
-    
-    for col, (min_val, max_val) in hover_bounds.items():
-        print(f"'{col}' bounds constrained to: [{min_val:.2f}, {max_val:.2f}] (from hover data)")
-        # Filter the cruise data to match the hover bounds
-        df_cruise = df_cruise[df_cruise[col].between(min_val, max_val)]
+    if frames:
+        df_master = pd.concat(frames, ignore_index=True)
+    else:
+        df_master = pd.DataFrame(columns=["flight_mode","k_id","esc_signal","rpm","AR","lambda","twist","alpha","v","performance","performance_variance"])
 
-    # --- 5. Finalize and Save Dataset ---
-    df_final = pd.concat([df_hover, df_cruise], ignore_index=True)
-    if df_final.empty:
-        raise SystemExit("Error: No data remained after filtering. Please check your DOEs.")
-    final_cols = ['filename', *GEO_COLS, 'flight_mode', 'op_speed', 'performance']
-    df_final = df_final[[c for c in final_cols if c in df_final.columns]]
-    master_parquet_path = (script_dir / P["master_parquet"]).resolve()
-    master_parquet_path.parent.mkdir(parents=True, exist_ok=True)
-    df_final.to_parquet(master_parquet_path, index=False)
-    
-    print(f"\nSuccessfully created master dataset with {len(df_final)} filtered data points.")
-    print(f"({len(df_hover)} hover points, {len(df_cruise)} cruise points)")
-    print(f"Output saved to: '{master_parquet_path}'")
+    master_path = P["master_parquet"]
+    df_master.to_parquet(master_path, index=False)
+    print(f"Wrote master dataset: {master_path} ({len(df_master)} rows)")
+
+    if not df_hover_diag.empty:
+        diag_path = Path(P["outputs_tables"]) / "01_hover_step_diagnostics.csv"
+        df_hover_diag.to_csv(diag_path, index=False)
+        print(f"Wrote hover diagnostics: {diag_path} ({len(df_hover_diag)} rows)")
 
 if __name__ == "__main__":
     main()

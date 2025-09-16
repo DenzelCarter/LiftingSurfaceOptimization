@@ -3,17 +3,18 @@
 # =========================
 paths:
   # --- Data Directories ---
-  data_hover_comsol:   "../Experiment/data/hover/comsol"
-  data_hover_raw:   "../Experiment/data/hover/raw"
-  data_hover_tare:  "../Experiment/data/hover/tare"
-  data_cruise_comsol:   "../Experiment/data/cruise/comsol"
-  data_cruise_raw:  "../Experiment/data/cruise/raw"
-  data_cruise_tare: "../Experiment/data/cruise/tare"
-  data_processed_dir: "../Experiment/data/processed" # Renamed for clarity
+  dir_hover_comsol:   "../Experiment/data/hover/comsol"
+  dir_hover_raw:   "../Experiment/data/hover/raw"
+  dir_hover_tare:  "../Experiment/data/hover/tare"
+  dir_cruise_comsol:   "../Experiment/data/cruise/comsol"
+  dir_cruise_raw:  "../Experiment/data/cruise/raw"
+  dir_cruise_tare: "../Experiment/data/cruise/tare"
+  dir_processed: "../Experiment/data/processed"
 
   # --- Key File Paths ---
   master_parquet:   "../Experiment/data/processed/master_dataset.parquet"
-  doe_csv:          "../Experiment/doe/doe_test_plan_01.csv"
+  doe_csv:          "../Experiment/doe/doe_initial.csv"
+  doe_optima:          "../Experiment/doe/doe_optima.csv"
 
   # --- Output Directories ---
   outputs_models:   "../Experiment/outputs/models"
@@ -21,38 +22,60 @@ paths:
   outputs_tables:   "../Experiment/outputs/tables"
 
 # =========================
-# DATA PROCESSING PARAMETERS
-# =========================
-hover_process:
-  # SNR thresholds for automatic data filtering
-  thrust_snr_threshold: 4.29
-  torque_snr_threshold: 4.29
-
-# =========================
 # FLUIDS
 # =========================
 fluids:
-  rho: 1.204   # kg/m^3 density of air at 20C, 1 atm
-  mu:  1.81e-5 # Pa·s dynamic viscosity of air at 20C, 1 atm
+  rho: 1.204      # density of air at 20 C (kg/m^3)
+  mu: 1.81e-5     # dynamic viscosity of air at 20 C (kg/m/s)
 
 # =========================
 # GEOMETRY (global constants)
 # =========================
 geometry:
   r_hub_m:        0.046      # hub radius (m)
-  span_blade_m:   0.184      # blade span (m) -> r_tip = r_hub_m + span_blade_m
-  n_blades:       2          # number of blades
+  l_blade_m:   0.184      # blade length (m) 
+  r_tip_m:   0.23       # tip radius (m) = r_hub + l_blade
 
 # =========================
-# MODEL FEATURES & BOUNDS
+# MODEL FEATURES
 # =========================
-geometry_cols: ["AR", "lambda", "aoa_root (deg)", "twist (deg)"]
+# Columns to be used as inputs for the surrogate models
+input_cols: ["AR", "lambda", "twist", "alpha", "v"]
 
 # =========================
 # OPTIMIZATION PARAMETERS
 # =========================
 optimization:
-  w_hover: [0.0, 0.25, 0.5, 0.75, 1.0] # Weighting for hover in multi-objective optimization
-  # Kappa controls the exploration-exploitation trade-off.
-  # Higher kappa = more exploration of uncertain regions.
-  kappa: 2.0
+  # how many points across w_hover in [0,1]
+  num_weights: 21
+
+  # Prefer putting all DE knobs under de_params
+  de_params:
+    strategy: best1bin
+    maxiter: 150
+    popsize: 20
+    mutation: [0.5, 1.0]
+    recombination: 0.7
+    tol: 0.01
+    workers: 1         # On Windows, 1 avoids multiprocessing pickling issues
+    updating: deferred
+    seed: 42
+
+  kappa_schedule:
+    kappa_max: 2.5
+    kappa_min: 0.1
+    uncertainty_initial: 16.0
+    uncertainty_target: 5.0
+    lambda95_alpha: 0.5   # 0=no neutralization, 1=full
+
+  # NEW: explicitly bound the search (units match your data)
+  bounds:
+    AR: [18.75, 31.25]
+    lambda: [0.50, 1.00]
+    twist: [-15.0, -3.0]     # deg
+    hover:
+      alpha: [10.0, 20.0]    # deg
+      v: [11.0, 48.0]        # m/s  (0.23 m radius, 450–2000 rpm)
+    cruise:
+      alpha: [0.0, 20.0]     # deg
+      v: [15.0, 25.0]        # m/s
